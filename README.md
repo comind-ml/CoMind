@@ -2,6 +2,10 @@
 
 A community-augmented LLM agent for automated machine learning engineering that leverages collective knowledge from Kaggle-style competitions.
 
+
+Paper [*Towards Community-Driven Agents for Machine Learning Engineering*](https://arxiv.org/abs/2506.20640)
+
+
 ## Installation
 
 ```bash
@@ -59,6 +63,18 @@ Required configs:
 - **DockerConfig**: Container image, mounts, resource limits
 - **AgentConfig**: Task description, pipeline, data overview
 
+## Cite
+```
+@article{Li2025TowardsCommunityDrivenAgents,
+  title        = {Towards Community-Driven Agents for Machine Learning Engineering},
+  author       = {Sijie Li and Weiwei Sun and Shanda Li and Ameet Talwalkar and Yiming Yang},
+  journal      = {arXiv preprint arXiv:2506.20640},
+  year         = {2025},
+  month        = jun,
+  note         = {arXiv:2506.20640 [cs.AI]},
+  url          = {https://arxiv.org/abs/2506.20640}
+}
+```
 ## License
 
 MIT
