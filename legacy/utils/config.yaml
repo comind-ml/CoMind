@@ -1,0 +1,55 @@
+# path to the task data directory
+data_dir: null
+
+# either provide a path to a plaintext file describing the task
+desc_file: null
+# or provide the task goal (and optionally evaluation information) as arguments
+goal: null
+eval: null
+
+log_dir: logs
+log_level: INFO
+workspace_dir: workspaces
+
+# whether to unzip any archives in the data directory
+preprocess_data: True
+# whether to copy the data to the workspace directory (otherwise it will be symlinked)
+# copying is recommended to prevent the agent from accidentally modifying the original data
+copy_data: True
+
+exp_name: null # a random experiment name will be generated if not provided
+
+# settings for code execution
+exec:
+  timeout: 7200
+  format_tb_ipython: False
+
+# agent hyperparams
+agent:
+  max_threads: 5
+  iterations: 20
+  max_steps: 20
+  timeout: 7200 # 2 hours per iteration
+  # whether to convert system messages into user messages
+  convert_system_to_user: False
+
+  # LLM settings for coding
+  code:
+    model: o4-mini-2025-04-16
+    temp: 1
+
+  # LLM settings for evaluating program output / tracebacks
+  feedback:
+    model: o4-mini-2025-04-16
+    temp: 1
+  
+  brainstorm:
+    model: o4-mini-2025-04-16
+    temp: 1
+
+# LLM settings for RAG
+retriever:
+  embed_model: intfloat/multilingual-e5-large-instruct
+  max_chunk_size: 500
+  chunk_overlap: 50
+  k: 3

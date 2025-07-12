@@ -1,0 +1,17 @@
+__pycache__
+workspaces
+example_tasks
+logs
+docs
+test.sh
+all_logs
+tmp_workspace
+competitions
+ablation.json
+ablation-1.json
+Dockerfile
+final.txt
+final-1.txt
+grade.py
+ours.json
+test/*
