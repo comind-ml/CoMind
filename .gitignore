@@ -1,0 +1,9 @@
+competition/*/
+comind.egg-info
+*.pyc
+.vscode
+.pytest_cache
+logs
+__pycache__
+agent_workspace
+submissions

@@ -1,0 +1,3 @@
+{
+    "summarize_kernels_batch": "## Problem Description\n{problem_desc}\n\n## Your Task\n{your_task}\n\n## Scripts\n{scripts}"
+}

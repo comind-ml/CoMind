@@ -1,0 +1,17 @@
+community:
+  competition_dir: "./competition/aerial-cactus-identification"
+  host: "127.0.0.1"
+  port: 8000
+
+llm:
+  model_name: "o4-mini-2025-04-16"
+  api_key: "unspecified"
+  temperature: 1.0
+  max_tokens: 100000
+  timeout: 600
+  native_function_calling: true
+  keep_history: false
+
+
+
+
