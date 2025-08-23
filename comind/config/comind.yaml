@@ -1,0 +1,26 @@
+competition:
+  id: None 
+  input_dir: None 
+  task_desc: None 
+
+llm:
+  model: o4-mini
+  max_retries: 3
+
+agent:
+  num_code_agents: 4
+  num_iterations: 10
+  num_iterations_code_agents: 20
+  time_limit_code_agents: 18000
+
+  max_referred_discussions: 10
+  max_referred_kernels: 10  
+
+  workspace_dir: workspace
+  external_data_dir: datasets 
+
+execution:
+  inspect_interval: 1200
+  timeout: 18000
+  max_cpu_cores: 8
+  max_gpu_count: 1

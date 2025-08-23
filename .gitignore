@@ -1,0 +1,7 @@
+workspace/
+datasets/
+competitions/
+*.egg-info
+__pycache__
+.pytest_cache
+.vscode
