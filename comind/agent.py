@@ -14,9 +14,9 @@ from comind.utils import query_llm, MetricValue, WorstMetricValue, extract_field
 from comind.kaggle import *
 
 class MetricUpdater:
-    def __init__(self, cfg: Config, best_metric: MetricValue, agent=None, shared_queue=None):
+    def __init__(self, cfg: Config, best_metric: MetricValue, agent=None):
         self.cfg = cfg
-        self.q = shared_queue if shared_queue is not None else multiprocessing.Queue()
+        self.q = queue.Queue()
         self._stop = False 
         self.best_metric = best_metric
         self.start_time = cfg.start_time
@@ -530,24 +530,15 @@ Make sure all your pipelines are well-explained. If similar parts are used in mu
             assert codebase_report is not None, f"Codebase {draft.codebase} not found in reports."
             copytree(codebase_report.output_dir, base_dir / "working", use_symlinks=False)
 
-    def _start_coder(self, draft: Draft, shared_metric_queue=None) -> Pipeline:
+    def _start_coder(self, draft: Draft) -> Pipeline:
         coder_cfg = deepcopy(self.cfg)
         self._setup_coder_workspace(draft, coder_cfg.agent_workspace_dir / draft.id)
         coder_cfg.agent_workspace_dir = self.cfg.agent_workspace_dir / draft.id / "working"
-        
-        # Create a new MetricUpdater with shared queue for this coder
-        coder_metric_updater = MetricUpdater(
-            cfg=coder_cfg,
-            best_metric=WorstMetricValue(),
-            agent=None,  # No agent reference needed in subprocess
-            shared_queue=shared_metric_queue
-        )
-        
         coder = CodeAgent(
             cfg=coder_cfg,
             draft=draft,
             is_lower_better=self.is_lower_better,
-            metric_updater=coder_metric_updater
+            metric_updater=self.metric_updater
         )
         
         # Add coder to code_agents for monitoring
@@ -562,9 +553,9 @@ Make sure all your pipelines are well-explained. If similar parts are used in mu
         
         return coder.run()
     
-    def _start_coder_with_result(self, draft: Draft, results_dict, index: int, shared_metric_queue):
+    def _start_coder_with_result(self, draft: Draft, results_dict, index: int):
         try:
-            result = self._start_coder(draft, shared_metric_queue)
+            result = self._start_coder(draft)
             results_dict[index] = result
         except Exception as e:
             import traceback
@@ -577,14 +568,11 @@ Make sure all your pipelines are well-explained. If similar parts are used in mu
         manager = multiprocessing.Manager()
         results_dict = manager.dict()
         
-        # Use the shared queue from the main metric updater
-        shared_metric_queue = self.metric_updater.q
-        
         processes = []
         for i, pipeline in enumerate(pipelines):
             process = torch.multiprocessing.Process(
                 target=self._start_coder_with_result, 
-                args=(pipeline, results_dict, i, shared_metric_queue)
+                args=(pipeline, results_dict, i)
             )
             process.start()
             processes.append(process)
@@ -599,7 +587,6 @@ Make sure all your pipelines are well-explained. If similar parts are used in mu
             else:
                 results.append(None) 
 
-        # Signal metric updater to stop (but don't close queue here, it's handled in run())
         self.metric_updater.stop()
         return results
 
@@ -640,11 +627,6 @@ Make sure all your pipelines are well-explained. If similar parts are used in mu
                 print("-" * 10)
 
             results: list[Pipeline] = []
-            shared_metric_queue = multiprocessing.Queue()
-            
-            # Update the main metric updater to use the shared queue
-            self.metric_updater.q = shared_metric_queue
-            
             def run_coders_and_store_results():
                 nonlocal results
                 results = self._start_coders(pipelines)
@@ -654,10 +636,6 @@ Make sure all your pipelines are well-explained. If similar parts are used in mu
             self.metric_updater.run()
 
             thread.join()
-            
-            # Clean up the shared queue
-            shared_metric_queue.close()
-            shared_metric_queue.join_thread()
             
             for report in results:
                 if report is not None:
