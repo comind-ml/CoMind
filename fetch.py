@@ -13,7 +13,6 @@ if __name__ == "__main__":
     parser.add_argument("--competition_id", "-c", type=str, default=None, help="Competition ID")
     parser.add_argument("--data-dir", "-d", type=Path, default=None, help="Path to the competition input directory")
     parser.add_argument("--task-desc", "-t", type=str, default=None, help="Path to the competition task description")
-    parser.add_argument("--monitor-with-agent", action="store_true", help="Run agent with live monitoring panel")
 
     args = parser.parse_args()
 
@@ -33,17 +32,9 @@ if __name__ == "__main__":
     elif config.competition_task_desc is None:
         print(f"Warning: No task description provided. Trying to read {config.competition_input_dir}/description.md")
         config.competition_task_desc = config.competition_input_dir / "description.md"
-    
+
     with open(config.competition_input_dir / "description.md", "r", encoding="utf-8") as f:
         config.competition_task_desc = f.read()
 
     config.agent_workspace_dir = config.agent_workspace_dir / config.competition_id / timestamp()
-
-    agent = Agent(config)
-
-    if args.monitor_with_agent:
-        # Run agent with live monitoring
-        agent.run(start_monitor=True)
-    else:
-        # Run the agent normally without monitoring
-        agent.run()
+    agent = Agent(config, fetch_data_only=True)

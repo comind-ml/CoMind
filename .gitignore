@@ -5,3 +5,11 @@ competitions/
 __pycache__
 .pytest_cache
 .vscode
+run.sh
+run-ongoing.sh
+compress_upload.py
+competitions
+compressed
+datasets.tar.xz
+*.txt
+upload.py

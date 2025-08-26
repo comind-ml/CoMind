@@ -1,16 +1,15 @@
 import json
+import pickle
 import shutil
 import queue
 import time
 import threading
-import multiprocessing
-import torch.multiprocessing
 from copy import deepcopy
 from rich.status import Status
 from comind.config import Config
 from pathlib import Path
 from comind.community import Pipeline, Dataset, Draft
-from comind.utils import query_llm, MetricValue, WorstMetricValue, extract_fields, copytree, extract_archives
+from comind.utils import query_llm, MetricValue, WorstMetricValue, extract_fields, copytree, extract_archives, get_logger
 from comind.kaggle import *
 
 class MetricUpdater:
@@ -20,10 +19,12 @@ class MetricUpdater:
         self._stop = False 
         self.best_metric = best_metric
         self.start_time = cfg.start_time
-        self.agent = agent  # Reference to agent for state saving
-    
+        self.agent = agent
+        self.logger = get_logger("MetricUpdater", cfg.agent_workspace_dir / "metric.log")
+
     def post(self, metric: MetricValue, code: str, submission: Path):
         if not isinstance(metric, WorstMetricValue):
+            self.logger.info(f"{metric} posted from path {submission}")
             self.q.put((metric, code, submission))
     
     def stop(self):
@@ -32,6 +33,7 @@ class MetricUpdater:
 
     def _update_best_metric(self, metric: MetricValue, code: str, submission: Path):
         if metric > self.best_metric:
+            old_best = self.best_metric
             self.best_metric = metric 
             time_elapsed = time.time() - self.start_time
 
@@ -39,15 +41,16 @@ class MetricUpdater:
 
             with open(self.cfg.agent_workspace_dir / "code" / f"submission_{time_elapsed}.py", "w") as f:
                 f.write(code)
-            
-            # Save updated agent state when global best metric changes
+
+            self.logger.info(f"🏆 Global best metric updated: {old_best} -> {self.best_metric}")
+
             if self.agent and hasattr(self.agent, 'save_agent_state'):
                 try:
                     self.agent.save_agent_state()
-                    print(f"🏆 Global best metric updated to {self.best_metric}, state saved")
+                    self.logger.info(f"🏆 Agent state saved with new global best: {self.best_metric}")
                 except Exception as e:
-                    print(f"Warning: Failed to save agent state after metric update: {e}")
-    
+                    self.logger.warning(f"Failed to save agent state after metric update: {e}")
+
     def run(self):
         self._stop = False
         while not self._stop:
@@ -58,24 +61,29 @@ class MetricUpdater:
 from comind.coder import CodeAgent
 
 class Agent:
-    def __init__(self, cfg: Config):
-        self.cfg = cfg
-        self.llm_cfg = cfg.llm
-        self.ideas : list[str] = []
+    def __init__(self, cfg: Config, fetch_data_only=False):
+        self.cfg                      = cfg
+        self.llm_cfg                  = cfg.llm
+        self.ideas : list[str]        = []
         self.reports : list[Pipeline] = []
-        self.task_desc = cfg.competition_task_desc
-        self.is_lower_better = self._query_is_lower_better()
-
+        self.code_agents              = []
         self.datasets: dict[str, Dataset] = {}
-        
-        # Initialize code_agents for monitor compatibility
-        self.code_agents = []
-
-        self._fetch_external_data()
-        self._summarize_public_kernels()
+        self.task_desc                = cfg.competition_task_desc
 
         (self.cfg.agent_workspace_dir / "submission").mkdir(parents=True, exist_ok=False)
         (self.cfg.agent_workspace_dir / "code").mkdir(parents=True, exist_ok=False)
+
+        self.logger = get_logger("Agent", cfg.agent_workspace_dir / "agent.log")
+        self.llm_logger = get_logger("LLM (Agent)", cfg.agent_workspace_dir / "llm.log", file_only=True)
+        self.is_lower_better          = self._query_is_lower_better()
+
+        with Status("Fetching external data..."):
+            self._fetch_external_data()
+        if fetch_data_only:
+            return
+
+        with Status("Summarizing kernels..."):
+            self._summarize_public_kernels()
 
         best_metric = WorstMetricValue()
         for report in self.reports: 
@@ -84,35 +92,19 @@ class Agent:
                 shutil.copy(report.submission, self.cfg.agent_workspace_dir / "submission" / "submission.csv")
         
         self.metric_updater = MetricUpdater(cfg, best_metric, self)
-        
-        # Print monitoring panel availability message
-        print("🎛️  Monitoring panel available! Use: python -m comind.monitor")
 
-    def launch_monitor(self):
-        """Launch the monitoring panel (should be called from main thread)."""
-        try:
-            from comind.monitor import run_monitor
-            run_monitor(self)
-        except ImportError as e:
-            print(f"Error: Could not launch monitoring panel: {e}")
-        except Exception as e:
-            print(f"Error: Failed to launch monitoring panel: {e}")
-    
     def save_agent_state(self):
         """Save current agent state for monitoring."""
-        import pickle
         state_file = self.cfg.agent_workspace_dir / "agent_state.pkl"
         state_file.parent.mkdir(parents=True, exist_ok=True)
         
-        # Get global best metric from metric_updater
         global_best_metric = str(self.metric_updater.best_metric) if hasattr(self.metric_updater, 'best_metric') else "N/A"
         
-        # Create a simplified state for monitoring
         monitor_state = {
             'ideas': self.ideas,
             'reports': self.reports,
             'datasets': self.datasets,
-            'code_agents': getattr(self, 'code_agents', []),
+            'code_agents': self.code_agents,
             'cfg': self.cfg,
             'global_best_metric': global_best_metric
         }
@@ -131,23 +123,30 @@ You are a Kaggle competitor tasked with achieving the highest possible score on 
 The first step is to determine whether the evaluation metric is lower-better or higher-better. You should respond in the following format:
 
 <is_lower_better>
-True if the metric is lower-better, False otherwise. Do not include any explanation.
+True if the metric is lower-better, False otherwise. 
 </is_lower_better>
+
+<explanation>
+Your rationale for your decision in 3-4 sentences.
+</explanation>
 """
 
         response = query_llm(self.llm_cfg, messages=[{
             "role": "system", 
             "content": prompt
-        }], required_fields=["is_lower_better"])
+        }], required_fields=["is_lower_better"], logger=self.llm_logger)
 
         return "true" in response["is_lower_better"][0].lower()
     
     def _fetch_external_data(self):
         kernels = download_kernels(self.cfg, self.is_lower_better)
+        self.logger.info(f"Listed {len(kernels)} kernels, downloading...")
         for kernel in kernels:
+            self.logger.info(f"Processing kernel {kernel}...")
             kernel_metadata = get_kernel_metadata(kernel)
             for ref_kernel in kernel_metadata["kernel_sources"]:
                 if ref_kernel:
+                    self.logger.info(f"Downloading referenced kernel {ref_kernel}...")
                     path = download_kernel_output(self.cfg, ref_kernel)
                     self.datasets[ref_kernel] = Dataset(
                         id=ref_kernel,
@@ -157,6 +156,7 @@ True if the metric is lower-better, False otherwise. Do not include any explanat
                     )
             for ref_model in kernel_metadata["model_sources"]:
                 if ref_model:
+                    self.logger.info(f"Downloading referenced model {ref_model}...")
                     path = download_model(self.cfg, ref_model)
                     metadata = get_model_metadata(self.cfg, ref_model)
                     self.datasets[ref_model] = Dataset(
@@ -167,6 +167,7 @@ True if the metric is lower-better, False otherwise. Do not include any explanat
                     )
             for ref_dataset in kernel_metadata["dataset_sources"]:
                 if ref_dataset:
+                    self.logger.info(f"Downloading referenced dataset {ref_dataset}...")
                     path = download_dataset(self.cfg, ref_dataset)
                     metadata = get_dataset_metadata(self.cfg, ref_dataset)
                     self.datasets[ref_dataset] = Dataset(
@@ -219,7 +220,7 @@ True if the metric is lower-better, False otherwise. Do not include any explanat
         #  "score": 0.95 (optional)
         # }
 
-        print(f"Summarizing kernel {kernel_path}")
+        self.logger.info(f"Summarizing kernel {kernel_path}")
 
         metadata = get_kernel_metadata(kernel_path)
 
@@ -268,7 +269,7 @@ Your response must contain summary, suggestions and code sections.
         response = query_llm(self.llm_cfg, messages=[{
             "role": "system", 
             "content": prompt
-        }], required_fields=["summary", "suggestions", "code", "submission"], check_fn=validate_fn)
+        }], required_fields=["summary", "suggestions", "code", "submission"], check_fn=validate_fn, logger=self.llm_logger)
 
         submission_path = kernel_path.parent / response["submission"][0]
         if "none" in response["submission"][0].lower():
@@ -363,7 +364,7 @@ Make sure all your solutions are well-explained.
         response = query_llm(self.llm_cfg, messages=[{
             "role": "system", 
             "content": prompt
-        }], required_fields=["solution"], check_fn=validate_fn)
+        }], required_fields=["solution"], check_fn=validate_fn, logger=self.llm_logger)
         
         for solution in response["solution"]:
             results = extract_fields(solution, ["description", "idea"])
@@ -391,8 +392,8 @@ Make sure all your ideas are well-explained.
         response = query_llm(self.llm_cfg, messages=[{
             "role": "system", 
             "content": prompt
-        }], required_fields=["idea"])
-        
+        }], required_fields=["idea"], logger=self.llm_logger)
+
         self.ideas = response["idea"]
 
     def _get_ideas_str(self) -> str:
@@ -473,7 +474,7 @@ Make sure all your pipelines are well-explained. If similar parts are used in mu
         response = query_llm(self.llm_cfg, messages=[{
             "role": "system", 
             "content": prompt
-        }], required_fields=["pipeline"], check_fn=validate_fn)
+        }], required_fields=["pipeline"], check_fn=validate_fn, logger=self.llm_logger)
 
         drafts = []
 
@@ -513,8 +514,8 @@ Make sure all your pipelines are well-explained. If similar parts are used in mu
         - working/
             - files copied from the codebase
         """
-        print(f"Setting up coder workspace for {draft.id}...")
-        print(f"Base dir: {base_dir}")
+        self.logger.info(f"Setting up coder workspace for {draft.id}...")
+        self.logger.info(f"Base dir: {base_dir}")
         (base_dir / "input" / self.cfg.competition_id).mkdir(parents=True, exist_ok=False)
         (base_dir / "working").mkdir(parents=True, exist_ok=False)
 
@@ -541,51 +542,41 @@ Make sure all your pipelines are well-explained. If similar parts are used in mu
             metric_updater=self.metric_updater
         )
         
-        # Add coder to code_agents for monitoring
         coder_data = {
             "name": draft.title,
             "messages": [("agent", f"Starting work on: {draft.title}")],
             "code": draft.code,
             "output_lines": ["Initializing..."],
-            "coder": coder  # Keep reference to actual coder
         }
         self.code_agents.append(coder_data)
         
         return coder.run()
     
-    def _start_coder_with_result(self, draft: Draft, results_dict, index: int):
+    def _start_coder_with_result(self, draft: Draft, results_list, index: int):
         try:
             result = self._start_coder(draft)
-            results_dict[index] = result
+            results_list[index] = result
         except Exception as e:
             import traceback
-            print(f"Error in coder {draft.id}: {e}")
-            print("Traceback:")
-            print(traceback.format_exc())
-            results_dict[index] = None
+            self.logger.error(f"Error in coder {draft.id}: {e}")
+            self.logger.error("Traceback:")
+            self.logger.error(traceback.format_exc())
+            results_list[index] = None
 
     def _start_coders(self, pipelines: list[Draft]) -> list[Pipeline]:
-        manager = multiprocessing.Manager()
-        results_dict = manager.dict()
+        results = [None] * len(pipelines)
         
-        processes = []
+        threads = []
         for i, pipeline in enumerate(pipelines):
-            process = torch.multiprocessing.Process(
+            thread = threading.Thread(
                 target=self._start_coder_with_result, 
-                args=(pipeline, results_dict, i)
+                args=(pipeline, results, i)
             )
-            process.start()
-            processes.append(process)
+            thread.start()
+            threads.append(thread)
         
-        for process in processes:
-            process.join()
-
-        results = []
-        for i in range(len(pipelines)):
-            if i in results_dict:
-                results.append(results_dict[i])
-            else:
-                results.append(None) 
+        for thread in threads:
+            thread.join()
 
         self.metric_updater.stop()
         return results
@@ -594,37 +585,24 @@ Make sure all your pipelines are well-explained. If similar parts are used in mu
         # Save initial state and provide monitor instructions
         if start_monitor:
             state_file = self.save_agent_state()
-            print("🎛️  Agent state saved for monitoring!")
-            print(f"📊  To monitor progress, run in another terminal:")
-            print(f"    python monitor_loader.py {state_file}")
-            print()
-            
+            self.logger.info("🎛️  Agent state saved for monitoring!")
+            self.logger.info(f"📊  To monitor progress, run in another terminal:")
+            self.logger.info(f"    python monitor_loader.py {state_file}")
+
         for iteration in range(self.cfg.agent_num_iterations):
-            print("-" * 10 + f" Iteration {iteration} " + "-" * 10)
+            self.logger.info("-" * 10 + f" Iteration {iteration} " + "-" * 10)
             with Status("Brainstorming..."):
                 self._brainstorm()
-            print(f"Brainstorming completed with {len(self.ideas)} ideas.")
-            print(self._get_ideas_str())
             if start_monitor:
                 self.save_agent_state()
 
             with Status("Rephrasing..."):
                 self._rephrase()
-            print(f"Rephrasing completed with {len(self.ideas)} ideas.")
-            print(self._get_ideas_str())
             if start_monitor:
                 self.save_agent_state()
 
             with Status("Generating pipelines..."):
                 pipelines = self._generate_pipelines()
-            print(f"Generated {len(pipelines)} pipelines.")
-            for pipeline in pipelines:
-                print(f"Pipeline {pipeline.id}: {pipeline.title}")
-                print(f"Description: {pipeline.description}")
-                print(f"Datasets: {pipeline.datasets}")
-                print(f"Codebase: {pipeline.codebase}")
-                print(f"Code: {pipeline.code}")
-                print("-" * 10)
 
             results: list[Pipeline] = []
             def run_coders_and_store_results():
@@ -647,6 +625,5 @@ Make sure all your pipelines are well-explained. If similar parts are used in mu
                         base_path=report.output_dir
                     )
             
-            # Update agent state for monitoring after each iteration
             if start_monitor:
                 self.save_agent_state()

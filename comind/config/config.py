@@ -7,7 +7,7 @@ import time
 
 @dataclass
 class LLMConfig:
-    model: str = "o4-mini"  # 提供默认值
+    model: str = "o4-mini"  
     params: Dict[str, Any] = field(default_factory=dict)
     max_retries: int = 3
 

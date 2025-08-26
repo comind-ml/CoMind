@@ -7,7 +7,7 @@ setup(
     name="comind",
     version="0.1.0",
     packages=["comind"],
-    install_requires=requirements,
+    # install_requires=requirements,
     python_requires=">=3.8",
     description="A machine learning pipeline framework",
     author="",

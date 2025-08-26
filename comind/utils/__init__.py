@@ -2,6 +2,7 @@ from .metric import MetricValue, WorstMetricValue
 from .llm import Conversation, query_llm, query_llm_raw, extract_fields
 from .data_preview import generate
 from .execute import Executor, ExecutionResult
+from .logger import get_logger
 from pathlib import Path
 import shutil
 import zipfile
@@ -80,4 +81,4 @@ def extract_archives(path: Path):
 
         zip_f.unlink()
 
-__all__ = ["MetricValue", "WorstMetricValue", "Conversation", "query_llm", "query_llm_raw", "extract_fields", "copytree", "generate", "Executor", "ExecutionResult", "extract_archives"]
+__all__ = ["MetricValue", "WorstMetricValue", "Conversation", "query_llm", "query_llm_raw", "extract_fields", "copytree", "generate", "Executor", "ExecutionResult", "extract_archives", "get_logger"]

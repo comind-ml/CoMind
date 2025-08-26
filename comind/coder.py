@@ -3,17 +3,15 @@ import pickle
 import html
 import re
 import threading
-from pathlib import Path
 from comind.config import Config
 from comind.community import Draft, Pipeline
-from comind.utils import Conversation, Executor, ExecutionResult, generate, WorstMetricValue, query_llm, MetricValue
+from comind.utils import Conversation, Executor, ExecutionResult, generate, WorstMetricValue, query_llm, MetricValue, get_logger
 from comind.agent import MetricUpdater
 
 class CodeAgent:
     def __init__(self, cfg: Config, draft: Draft, is_lower_better: bool, metric_updater: MetricUpdater):
         self.cfg = cfg
         self.draft = draft
-        self.llm = Conversation(cfg.llm)
         self.executor = Executor(cfg)
         self.start_time = time.time()
         self.iteration = 0
@@ -21,17 +19,17 @@ class CodeAgent:
         self.is_lower_better = is_lower_better
         self.metric_updater = metric_updater
         
-        # Initialize coder state for monitoring
         self.messages = []
         self.current_code = draft.code
         self.output_lines = ["Unavailabe. The coder is initializing..."]
         self.state_file = self.cfg.agent_workspace_dir.parent / "coder_state.pkl"
-        
-        # Execution monitoring
+        self.logger = get_logger(f"coder-{draft.id}", self.cfg.agent_workspace_dir / "coder.log")
+        self.llm_logger = get_logger(f"llm-{draft.id}", self.cfg.agent_workspace_dir / "llm.log", file_only=True)
+        self.llm = Conversation(cfg.llm, logger=self.llm_logger)
+
         self._execution_thread = None
         self._execution_active = False
         self._execution_result = None
-        self._real_time_output = []
         self._execution_lock = threading.Lock()
         self._output_monitor_thread = None
         self._current_log_file = None
@@ -48,7 +46,7 @@ class CodeAgent:
                 'best_metric': str(self.best_metric),
                 'start_time': self.start_time,
                 'draft_id': self.draft.id,
-                'is_running': True  # Indicate this coder is actively running
+                'is_running': True  
             }
             
             # Ensure directory exists
@@ -58,12 +56,9 @@ class CodeAgent:
                 pickle.dump(coder_state, f)
                 
         except Exception as e:
-            # Don't let state saving errors crash the coder
-            print(f"Warning: Failed to save coder state: {e}")
+            self.logger.warning(f"Warning: Failed to save coder state: {e}")
     
     def _add_message(self, role: str, content: str):
-        """Add a message and update state."""
-        # replace <code>...</code> with ```python\ncode\n```
         content = re.sub(r'<code>([\s\S]*?)</code>', r'```python\n\1\n```', content)
         
         # Escape HTML tags except within code blocks
@@ -87,7 +82,7 @@ class CodeAgent:
         self.output_lines = output_lines
         self._save_state()
     
-    def _start_output_monitor(self, log_file_path=None):
+    def _start_output_monitor(self):
         """Start monitoring real-time output from executor."""
         if self._output_monitor_thread and self._output_monitor_thread.is_alive():
             return
@@ -117,12 +112,12 @@ class CodeAgent:
                                     # Update output lines with full content (no truncation)
                                     self.output_lines = full_content.split('\n') if full_content else ["No output yet..."]
                                     self._save_state()
-                                    print(f"🔄 Output updated: {len(self.output_lines)} lines")
+                                    self.logger.info(f"🔄 Output updated: {len(self.output_lines)} lines")
                                 
                                 last_content_hash = content_hash
                                 last_modified = current_modified
                         except Exception as read_error:
-                            print(f"Error reading log file: {read_error}")
+                            self.logger.error(f"Error reading log file: {read_error}")
                     else:
                         # Log file doesn't exist yet, update with placeholder
                         with self._execution_lock:
@@ -131,7 +126,7 @@ class CodeAgent:
                     
                     time.sleep(20)  # Check every 20 seconds
                 except Exception as e:
-                    print(f"Error in output monitor: {e}")
+                    self.logger.error(f"Error in output monitor: {e}")
                     break
                     
         self._output_monitor_thread = threading.Thread(target=monitor_output, daemon=True)
@@ -149,16 +144,12 @@ class CodeAgent:
             try:
                 with self._execution_lock:
                     self._execution_active = True
-                    self._real_time_output = ["Starting execution..."]
                     self._execution_result = None
                 
-                # Create a custom executor that allows us to get the log file early
-                # We'll use a modified version of the execute method
                 result = self._execute_with_monitoring(code, goal)
                 
                 with self._execution_lock:
                     self._execution_result = result
-                    # Update final output
                     if result:
                         self.output_lines = result.final_output.split('\n')
                     else:
@@ -167,8 +158,7 @@ class CodeAgent:
                     
             except Exception as e:
                 with self._execution_lock:
-                    self._real_time_output.append(f"Execution error: {str(e)}")
-                    self.output_lines = self._real_time_output.copy()
+                    self.output_lines = [f"Execution error: {str(e)}"]
                     self._save_state()
             finally:
                 self._stop_output_monitor()
@@ -189,14 +179,14 @@ class CodeAgent:
             # Start monitoring the log file
             self._start_output_monitor()
             
-            print(f"🔄 Starting execution with log file: {log_file_path}")
+            self.logger.info(f"🔄 Starting execution with log file: {log_file_path}")
             
             # Execute using the executor with our log file
             result = self.executor.execute(code, goal, log_file_path)
             
             return result
         except Exception as e:
-            print(f"Execution error: {e}")
+            self.logger.error(f"Execution error: {e}")
             return None
     
     def _wait_for_execution(self, timeout=None):
@@ -318,9 +308,9 @@ An extremely detailed description of the weaknesses of the pipeline you found du
             
             with open(self.state_file, 'wb') as f:
                 pickle.dump(coder_state, f)
-            print(f"🏁 Coder {self.draft.id} completed with final best metric: {self.best_metric}")
+            self.logger.info(f"🏁 Coder {self.draft.id} completed with final best metric: {self.best_metric}")
         except Exception as e:
-            print(f"Warning: Failed to save final coder state: {e}")
+            self.logger.warning(f"Warning: Failed to save final coder state: {e}")
 
         return Pipeline(
             id=self.draft.id,
@@ -401,7 +391,7 @@ You should report the value of the **final metric** (not the training loss value
         response = query_llm(self.cfg.llm, messages=[{
             "role": "system",
             "content": prompt
-        }], required_fields=["abstract", "summary", "metric"], check_fn=check_fn)
+        }], required_fields=["abstract", "summary", "metric"], check_fn=check_fn, logger=self.llm_logger)
 
         if "none" in response["metric"][0].lower():
             metric = WorstMetricValue()
@@ -413,13 +403,13 @@ You should report the value of the **final metric** (not the training loss value
             metric = WorstMetricValue()
         
         if not isinstance(metric, WorstMetricValue):
+            self.metric_updater.post(metric, code, submission)
+            
             if metric > self.best_metric:
                 old_best = self.best_metric
                 self.best_metric = metric
-                print(f"🎯 Coder {self.draft.id} best metric updated: {old_best} -> {self.best_metric}")
-                # Save state immediately when best metric is updated
+                self.logger.info(f"🎯 Coder {self.draft.id} local best metric updated: {old_best} -> {self.best_metric}")
                 self._save_state()
-            self.metric_updater.post(metric, code, submission)
         
         return f"""
 <execution_time>
