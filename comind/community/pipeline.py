@@ -10,6 +10,7 @@ class Pipeline:
     title: str
     description: str 
     code: str
+    full_code: str
     referenced_private_data: bool
     metric: MetricValue
     submission: Path | None 
@@ -26,8 +27,9 @@ class Pipeline:
         # Assure the submission exists if the metric is not WorstMetricValue
         if not isinstance(self.metric, WorstMetricValue) and self.submission is None:
             raise FileNotFoundError(f"Submission {self.output_dir} not found")
-
-    def __str__(self):
+    
+    def to_str(self, full_code=False):
+        code = self.full_code if full_code else self.code
         suggestions = f"<suggestions>\n{self.suggestions}\n</suggestions>" if self.suggestions else ""
         datasets = "\n".join(str(dataset) for dataset in self.datasets)
         return f"""
@@ -36,7 +38,7 @@ class Pipeline:
 <id>{self.id}</id>
 <referenced_private_data>{self.referenced_private_data}</referenced_private_data>
 <description>\n{self.description}\n</description>
-<code>\n{self.code}\n</code>
+<code>\n{code}\n</code>
 <metric>\n{self.metric}\n</metric>
 {suggestions}
 <datasets>

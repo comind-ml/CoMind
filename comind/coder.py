@@ -3,6 +3,7 @@ import pickle
 import html
 import re
 import threading
+import shutil
 from comind.config import Config
 from comind.community import Draft, Pipeline
 from comind.utils import Conversation, Executor, ExecutionResult, generate, WorstMetricValue, query_llm, MetricValue, get_logger
@@ -18,7 +19,11 @@ class CodeAgent:
         self.best_metric = WorstMetricValue()
         self.is_lower_better = is_lower_better
         self.metric_updater = metric_updater
-        
+
+        (self.cfg.agent_workspace_dir / "best_submission").mkdir(parents=True, exist_ok=True)
+        self.best_submission_path = self.cfg.agent_workspace_dir / "best_submission" / "submission.csv"
+        self.best_code = "Unavailable"
+
         self.messages = []
         self.current_code = draft.code
         self.output_lines = ["Unavailabe. The coder is initializing..."]
@@ -232,7 +237,7 @@ All the input files are visible in ../input folder, this folder typically contai
         if self.draft.codebase_content is not None:
             prompt += f"""
 You will develop the pipeline based on this codebase. Any output files of the codebase, such as csvs, checkpoints, etc., are visible in ./, which is your current working directory. 
-<codebase_content>\n{self.draft.codebase_content}\n</codebase_content>
+<code>\n{self.draft.codebase_content}\n</code>
 """
 
         prompt += f"""
@@ -302,7 +307,7 @@ An extremely detailed description of the weaknesses of the pipeline you found du
                 'best_metric': str(self.best_metric),
                 'start_time': self.start_time,
                 'draft_id': self.draft.id,
-                'is_running': False,  # Mark as completed
+                'is_running': False, 
                 'completed': True
             }
             
@@ -317,6 +322,7 @@ An extremely detailed description of the weaknesses of the pipeline you found du
             title=self.draft.title,
             description=report["description"][0],
             code=report["code"][0],
+            full_code=self.best_code,
             referenced_private_data=False,
             metric=self.best_metric,
             submission=submission,
@@ -408,7 +414,9 @@ You should report the value of the **final metric** (not the training loss value
             if metric > self.best_metric:
                 old_best = self.best_metric
                 self.best_metric = metric
+                self.best_code = code
                 self.logger.info(f"🎯 Coder {self.draft.id} local best metric updated: {old_best} -> {self.best_metric}")
+                shutil.copy(submission, self.best_submission_path)
                 self._save_state()
         
         return f"""
@@ -486,5 +494,7 @@ E) Run on a larger scale (moderately increase training epochs, etc.). You should
             self.llm.add_message(role="user", content=prompt)
             self._add_message("agent", prompt)
 
+        if self.best_submission_path.exists():
+            shutil.copy(self.best_submission_path, self.cfg.agent_workspace_dir / "submission.csv")
         return self._generate_report()
         

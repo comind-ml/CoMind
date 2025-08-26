@@ -62,7 +62,7 @@ class AgentStateLoader:
                 # Load global best metric
                 old_global_best = self.global_best_metric
                 self.global_best_metric = state.get('global_best_metric', 'N/A')
-                
+
                 if old_global_best != self.global_best_metric:
                     print(f"🏆 Global best metric updated: {old_global_best} -> {self.global_best_metric}")
                 
@@ -175,68 +175,9 @@ class AgentStateLoader:
                     # Update the data but don't trigger UI refresh
                     self.code_agents = discovered_coders
                 
-                # Update global best metric from all coders
-                self._update_global_best_metric()
         except Exception as e:
             print(f"Error scanning coders: {e}")
     
-    def _update_global_best_metric(self):
-        """Update global best metric from all code agents."""
-        try:
-            best_metrics = []
-            
-            # Collect all valid best metrics from code agents
-            for agent_data in self.code_agents:
-                best_metric = agent_data.get("best_metric")
-                if best_metric and best_metric != "N/A" and best_metric != "None" and best_metric != "WorstMetricValue()":
-                    try:
-                        # Handle different metric string formats
-                        metric_str = str(best_metric).strip()
-                        
-                        # Remove common prefixes/suffixes from metric strings
-                        if metric_str.startswith("MetricValue(") and metric_str.endswith(")"):
-                            # Extract number from MetricValue(0.123456)
-                            metric_str = metric_str[12:-1]
-                        
-                        # Try to convert to float for comparison
-                        metric_value = float(metric_str)
-                        best_metrics.append(metric_value)
-                        print(f"📊 Valid metric from {agent_data.get('draft_id', 'unknown')}: {metric_value}")
-                    except (ValueError, TypeError):
-                        # If not a number, keep as string for display
-                        print(f"📊 Non-numeric metric from {agent_data.get('draft_id', 'unknown')}: {best_metric}")
-                        best_metrics.append(best_metric)
-            
-            if best_metrics:
-                # If all metrics are numbers, find the best (assuming higher is better)
-                if all(isinstance(m, (int, float)) for m in best_metrics):
-                    new_global_best = max(best_metrics)
-                    # Format to reasonable precision
-                    if isinstance(new_global_best, float):
-                        new_global_best = f"{new_global_best:.6f}"
-                    else:
-                        new_global_best = str(new_global_best)
-                else:
-                    # Mixed types, just show the first valid one
-                    new_global_best = str(best_metrics[0])
-                
-                old_global_best = self.global_best_metric
-                # Only update if there's a meaningful change
-                if new_global_best != old_global_best and old_global_best != "N/A":
-                    self.global_best_metric = new_global_best
-                    self._state_updated = True
-                    print(f"🏆 Global best metric updated from coders: {old_global_best} -> {new_global_best}")
-                elif old_global_best == "N/A":
-                    # First time setting a valid metric
-                    self.global_best_metric = new_global_best
-                    self._state_updated = True
-                    print(f"🏆 Global best metric initialized from coders: {new_global_best}")
-            else:
-                # No valid metrics found from coders, but don't override if we have one from main state
-                print("📊 No valid metrics found from individual coders")
-                    
-        except Exception as e:
-            print(f"Error updating global best metric: {e}")
     
     def _monitor_file_changes(self):
         """Monitor file changes and reload when needed."""

@@ -297,6 +297,7 @@ Your response must contain summary, suggestions and code sections.
             title=metadata["title"],
             description=response["summary"][0],
             code=response["code"][0],
+            full_code=content,
             metric=WorstMetricValue() if "score" not in metadata else MetricValue(metadata["score"], maximize=not self.is_lower_better),
             submission=submission_path,
             output_dir=kernel_path.parent,
@@ -400,7 +401,7 @@ Make sure all your ideas are well-explained.
         return "\n".join(f"- {idea}" for idea in self.ideas)
     
     def _get_reports_str(self) -> str:
-        return "\n".join(str(report) for report in self.reports)
+        return "\n".join(report.to_str(full_code=False) for report in self.reports)
 
     def _generate_pipelines(self) -> list[Draft]:
         prompt = f"""
@@ -490,7 +491,7 @@ Make sure all your pipelines are well-explained. If similar parts are used in mu
             codebase_content = None
             if codebase is not None:
                 report = self._get_report_from_id(codebase)
-                codebase_content = report.code
+                codebase_content = report.full_code
 
             drafts.append(Draft(
                 id=results["title"][0].lower().replace(" ", "-"),

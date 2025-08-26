@@ -14,7 +14,7 @@ from pandas.api.types import is_numeric_dtype
 code_files = {".py", ".sh", ".yaml", ".yml", ".md", ".html", ".xml", ".log", ".rst"}
 # we treat these files as text (rather than binary) files
 plaintext_files = {".txt", ".csv", ".json", ".tsv"} | code_files
-
+exclude_files = {"kernel-metadata.json", "dataset-metadata.json", "model-metadata.json"}
 
 def get_file_len_size(f: Path) -> tuple[int, str]:
     """
@@ -151,6 +151,8 @@ def generate(base_path, include_file_details=True, simple=False):
     if include_file_details:
         for fn in _walk(base_path):
             file_name = str(fn.relative_to(base_path))
+            if fn.name in exclude_files:
+                continue
 
             if fn.suffix == ".csv":
                 out.append(preview_csv(fn, file_name, simple=simple))
