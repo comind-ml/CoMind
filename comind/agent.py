@@ -292,13 +292,19 @@ Your response must contain summary, suggestions and code sections.
             base_path=kernel_path.parent
         )
 
+        metric = WorstMetricValue() if "score" not in metadata else MetricValue(metadata["score"])
+        
+        if submission_path and not submission_path.exists():
+            submission_path = None
+            metric = WorstMetricValue()
+
         return Pipeline(
             id=metadata["id"],
             title=metadata["title"],
             description=response["summary"][0],
             code=response["code"][0],
             full_code=content,
-            metric=WorstMetricValue() if "score" not in metadata else MetricValue(metadata["score"], maximize=not self.is_lower_better),
+            metric=metric,
             submission=submission_path,
             output_dir=kernel_path.parent,
             datasets=datasets,
