@@ -65,4 +65,6 @@ class Conversation:
         return self.messages.pop()
     
     def query(self, required_fields: list[str] = [], check_fn: Callable[[dict], bool] = None) -> dict:
-        return query_llm(self.cfg, self.messages, required_fields, check_fn, self.logger)
+        result = query_llm(self.cfg, self.messages, required_fields, check_fn, self.logger)
+        self.add_message("assistant", result['_raw_content'])
+        return result

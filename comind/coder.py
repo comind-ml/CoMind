@@ -4,41 +4,86 @@ import html
 import re
 import threading
 import shutil
+from copy import deepcopy
 from comind.config import Config
 from comind.community import Draft, Pipeline
-from comind.utils import Conversation, Executor, ExecutionResult, generate, WorstMetricValue, query_llm, MetricValue, get_logger
+from comind.utils import Conversation, Executor, generate, WorstMetricValue, query_llm, MetricValue, get_logger
+
+from comind.utils.jupyter_session import JupyterSession, ExecutionResult
 from comind.agent import MetricUpdater
 
 class CodeAgent:
-    def __init__(self, cfg: Config, draft: Draft, is_lower_better: bool, metric_updater: MetricUpdater):
+    # ============================================================================
+    # INITIALIZATION AND CONFIGURATION
+    # ============================================================================
+    
+    def __init__(
+        self, 
+        cfg: Config, 
+        draft: Draft, 
+        is_lower_better: bool, 
+        metric_updater: MetricUpdater,
+        env_name: str
+    ):
+        # Core configuration
         self.cfg = cfg
         self.draft = draft
-        self.executor = Executor(cfg)
-        self.start_time = time.time()
-        self.iteration = 0
-        self.best_metric = WorstMetricValue()
         self.is_lower_better = is_lower_better
         self.metric_updater = metric_updater
+        self.jupyter_session = JupyterSession(cfg, env_name)
+        
+        # Timing and iteration tracking
+        self.start_time = time.time()
+        self.iteration = 0
 
-        (self.cfg.agent_workspace_dir / "best_submission").mkdir(parents=True, exist_ok=True)
-        self.best_submission_path = self.cfg.agent_workspace_dir / "best_submission" / "submission.csv"
-        self.best_code = "Unavailable"
-
-        self.messages = []
-        self.current_code = draft.code
-        self.output_lines = ["Unavailabe. The coder is initializing..."]
-        self.state_file = self.cfg.agent_workspace_dir.parent / "coder_state.pkl"
+        # Logging setup
         self.logger = get_logger(f"coder-{draft.id}", self.cfg.agent_workspace_dir / "coder.log")
         self.llm_logger = get_logger(f"llm-{draft.id}", self.cfg.agent_workspace_dir / "llm.log", file_only=True)
         self.llm = Conversation(cfg.llm, logger=self.llm_logger)
 
+        self.logger.info(f"Coder {draft.id} using conda environment {env_name}")
+
+        # State tracking
+        self.messages = []
+        self.current_code = draft.code
+        self.output_lines = ["Unavailable. The coder is initializing..."]
+        self.best_code = None
+        self.best_metric = WorstMetricValue()
+        
+        # File paths setup
+        (self.cfg.agent_workspace_dir / "best_submission").mkdir(parents=True, exist_ok=True)
+        self.best_submission_path = self.cfg.agent_workspace_dir / "best_submission" / "submission.csv"
+        self.state_file = self.cfg.agent_workspace_dir.parent / "coder_state.pkl"
+        
+        # Threading support for real-time monitoring
         self._execution_thread = None
         self._execution_active = False
         self._execution_result = None
         self._execution_lock = threading.Lock()
         self._output_monitor_thread = None
         self._current_log_file = None
-        
+
+    def _get_packages(self):
+        """Get list of pre-installed packages."""
+        pkgs = [
+            "numpy",
+            "pandas",
+            "scikit-learn",
+            "statsmodels",
+            "xgboost",
+            "lightGBM",
+            "torch",
+            "torchvision",
+            "torch-geometric",
+            "bayesian-optimization",
+            "timm",
+        ]
+        return pkgs
+
+    # ============================================================================
+    # STATE MANAGEMENT
+    # ============================================================================
+    
     def _save_state(self):
         """Save current coder state for monitoring."""
         try:
@@ -64,6 +109,7 @@ class CodeAgent:
             self.logger.warning(f"Warning: Failed to save coder state: {e}")
     
     def _add_message(self, role: str, content: str):
+        """Add message to conversation history and save state."""
         content = re.sub(r'<code>([\s\S]*?)</code>', r'```python\n\1\n```', content)
         
         # Escape HTML tags except within code blocks
@@ -86,9 +132,13 @@ class CodeAgent:
         """Update output lines and save state."""
         self.output_lines = output_lines
         self._save_state()
+
+    # ============================================================================
+    # ASYNC EXECUTION AND MONITORING
+    # ============================================================================
     
     def _start_output_monitor(self):
-        """Start monitoring real-time output from executor."""
+        """Start monitoring real-time output from Jupyter session log file."""
         if self._output_monitor_thread and self._output_monitor_thread.is_alive():
             return
             
@@ -98,12 +148,12 @@ class CodeAgent:
             
             while self._execution_active:
                 try:
-                    # Use the log file provided by executor
+                    # Monitor the Jupyter session's log file
                     if self._current_log_file and self._current_log_file.exists():
-                        # Check file modification time instead of size
+                        # Check file modification time
                         current_modified = self._current_log_file.stat().st_mtime
                         
-                        # Always read and check content since executor overwrites the file
+                        # Read and check content for changes
                         try:
                             with open(self._current_log_file, 'r', encoding='utf-8', errors='ignore') as f:
                                 full_content = f.read()
@@ -114,24 +164,24 @@ class CodeAgent:
                             
                             if content_hash != last_content_hash or current_modified > last_modified:
                                 with self._execution_lock:
-                                    # Update output lines with full content (no truncation)
-                                    self.output_lines = full_content.split('\n') if full_content else ["No output yet..."]
+                                    # Update output lines with log file content
+                                    self.output_lines = full_content.split('\n') if full_content else ["Jupyter execution starting..."]
                                     self._save_state()
-                                    self.logger.info(f"🔄 Output updated: {len(self.output_lines)} lines")
+                                    self.logger.info(f"🔄 Jupyter output updated: {len(self.output_lines)} lines")
                                 
                                 last_content_hash = content_hash
                                 last_modified = current_modified
                         except Exception as read_error:
-                            self.logger.error(f"Error reading log file: {read_error}")
+                            self.logger.error(f"Error reading Jupyter log file: {read_error}")
                     else:
                         # Log file doesn't exist yet, update with placeholder
                         with self._execution_lock:
-                            self.output_lines = ["Execution starting, waiting for output..."]
+                            self.output_lines = ["Jupyter session starting, waiting for output..."]
                             self._save_state()
                     
-                    time.sleep(20)  # Check every 20 seconds
+                    time.sleep(10)  # Check every 10 seconds for Jupyter
                 except Exception as e:
-                    self.logger.error(f"Error in output monitor: {e}")
+                    self.logger.error(f"Error in Jupyter output monitor: {e}")
                     break
                     
         self._output_monitor_thread = threading.Thread(target=monitor_output, daemon=True)
@@ -144,7 +194,7 @@ class CodeAgent:
             self._output_monitor_thread.join(timeout=5)
     
     def _execute_async(self, code: str, goal: str):
-        """Execute code asynchronously with real-time monitoring."""
+        """Execute Jupyter cell asynchronously with real-time monitoring."""
         def execute_in_background():
             try:
                 with self._execution_lock:
@@ -155,15 +205,15 @@ class CodeAgent:
                 
                 with self._execution_lock:
                     self._execution_result = result
-                    if result:
-                        self.output_lines = result.final_output.split('\n')
+                    if result and result.output:
+                        self.output_lines = result.output.split('\n')
                     else:
-                        self.output_lines = ["Execution failed or timed out"]
+                        self.output_lines = ["Jupyter execution completed"]
                     self._save_state()
                     
             except Exception as e:
                 with self._execution_lock:
-                    self.output_lines = [f"Execution error: {str(e)}"]
+                    self.output_lines = [f"Jupyter execution error: {str(e)}"]
                     self._save_state()
             finally:
                 self._stop_output_monitor()
@@ -172,56 +222,42 @@ class CodeAgent:
         self._execution_thread.start()
     
     def _execute_with_monitoring(self, code: str, goal: str):
-        """Execute code with real-time monitoring using executor's log file."""
+        """Execute Jupyter cell with real-time monitoring using log file."""
         try:
-            # Get log file path before execution starts
-            log_file_path = self.executor.get_log_file_path()
-            
-            # Set the log file path and start monitoring immediately
+            # Get the log file path from Jupyter session
             with self._execution_lock:
-                self._current_log_file = log_file_path
+                self._current_log_file = self.jupyter_session.log_file_path
             
             # Start monitoring the log file
             self._start_output_monitor()
             
-            self.logger.info(f"🔄 Starting execution with log file: {log_file_path}")
+            self.logger.info(f"🔄 Starting Jupyter execution with log file: {self._current_log_file}")
             
-            # Execute using the executor with our log file
-            result = self.executor.execute(code, goal, log_file_path)
+            # Execute using the Jupyter session
+            result = self.jupyter_session.append_cell(code, goal)
             
             return result
         except Exception as e:
-            self.logger.error(f"Execution error: {e}")
+            self.logger.error(f"Jupyter execution error: {e}")
             return None
     
     def _wait_for_execution(self, timeout=None):
-        """Wait for execution to complete and return the result."""
+        """Wait for Jupyter execution to complete and return the result."""
         if self._execution_thread:
             self._execution_thread.join(timeout=timeout)
             
         with self._execution_lock:
             return self._execution_result
-    
-    def _get_packages(self):
-        pkgs = [
-            "numpy",
-            "pandas",
-            "scikit-learn",
-            "statsmodels",
-            "xgboost",
-            "lightGBM",
-            "torch",
-            "torchvision",
-            "torch-geometric",
-            "bayesian-optimization",
-            "timm",
-        ]
-        return pkgs
 
+    # ============================================================================
+    # LLM INTERACTION AND PROMPT GENERATION
+    # ============================================================================
+    
     def _post_initial_message(self):
-        data_preview = generate((self.cfg.agent_workspace_dir.parent / "input"))
+        """Generate and post the initial system message to start the conversation."""
+        data_preview = generate((self.cfg.agent_workspace_dir.parent), include_file_details=False)
         prompt = f"""
-You're an expert Kaggle competitor tasked with implementing a pipeline into Python code. You can modify the details (training parameters, feature engineering, model selection, etc. ), but do not change overall architecture of this pipeline. The goal is to **obtain best score** on this competition.
+You're an expert Kaggle competitor tasked with implementing a pipeline into a Jupyter notebook. You can modify the details (training parameters, feature engineering, model selection, etc. ), but do not change overall architecture of this pipeline. The goal is to **obtain best score** on this competition.
 
 <task_desc>\n{self.cfg.competition_task_desc}\n</task_desc>
 
@@ -230,18 +266,30 @@ You're an expert Kaggle competitor tasked with implementing a pipeline into Pyth
 This is the code abstract of the pipeline:
 <code>\n{self.draft.code}\n</code>
 
-All the input files are visible in ../input folder, this folder typically contains the competition data and external resouces, including public datasets, models and outputs of other kernels. DO NOT USE /kaggle/input paths in your code. USE ../input instead. Here is an abstract of the input files (../input):
+All the input files are visible in ../input folder, this folder typically contains the competition data and external resouces, including public datasets, models and outputs of other kernels. DO NOT USE /kaggle/input paths in your code. USE ../input instead.
+
+file structure:
+    - input/ (../input)
+        - competition_id/ # the official competition dataset
+        - alice/dataset1/ # other public datasets
+        - alice/kernel1/  # referenced kernels
+    - working/ 
+        - agent.ipynb # the notebook you will be working on (./agent.ipynb)
+        - other files
+
+ Here is an abstract of the file structure:
 
 <data_preview>\n{data_preview}\n</data_preview>
 """
         if self.draft.codebase_content is not None:
             prompt += f"""
-You will develop the pipeline based on this codebase. Any output files of the codebase, such as csvs, checkpoints, etc., are visible in ./, which is your current working directory. 
-<code>\n{self.draft.codebase_content}\n</code>
-"""
+You will develop the pipeline based on this codebase. Any output files of the codebase, such as csvs, checkpoints, etc., are visible in ./, which is also your current working directory. 
 
-        prompt += f"""
-Your code must produce a submission at ./submission.csv, this is EXTREMELY IMPORTANT. Before generating the submission, you should print the value of the evaluation metric computed on a hold-out validation set. You can use custom evaluation functions during training, but the final metric **MUST FOLLOW THE EVALUATION SECTION IN THE TASK DESCRIPTION** on a validation set. If other kernels with submission.csv are provided in the input folder, you can ensemble them before generating your own submission. This is important because we will pick your best code based on this metric. You are allowed to load the checkpoints of other models. Do not contain any absolute paths in your code. Time limit per run is 2 hours. Your code will be killed if timeout. 
+<code>\n{self.draft.codebase_content}\n</code>
+
+Your first proposed code must based on this codebase, load the checkpoints stored in the folder and make predictions instead of train your own model from scratch. Implement the pipeline ONLY after you have made successful submission based on the codebase. You should note that checkpoints generated by this codebase is store in ./ other than ../input. You must load the checkpoint file under the ./ directory.
+
+Your code must produce a submission at ./submission.csv, this is EXTREMELY IMPORTANT. Before generating the submission, you must print the value of the evaluation metric computed on a hold-out validation set. You can use custom evaluation functions during training, but the final metric **MUST FOLLOW THE EVALUATION SECTION IN THE TASK DESCRIPTION** on a validation set. If other kernels with submission.csv are provided in the input folder, you can ensemble them before generating your own submission. This is important because we will pick your best code based on this metric. You are allowed to load the checkpoints of other models. Do not contain any absolute paths in your code. Time limit per run is 2 hours. Your code will be killed if timeout. 
 
 Your code will be executed on a single A6000 GPU. Use large batchsizes to maximize the gpu utilization. If the code segment is provided in this prompt, you should follow the input/output structure. You are allowed to install any packages you need or inspect the workspace (e.g., print file contents, check folder structure). DO NOT USE ABSOLUTE PATHS IN YOUR CODE.
 
@@ -249,32 +297,88 @@ The workspace will be maintained across iterations. That is, if your first itera
 
 We have installed the following packages: {", ".join(self._get_packages())}. You are allowed to install any packages by running `pip install <package_name>` in your script.
 
-Now, please generate the full code based on the above instructions. You must respond in the following format:
+A persistent Jupyter Notebook session is maintained. Your proposed code cell will be directly appended to the notebook and executed. You should separate data loading, training and evaluation in different cells. Now, please propose THE FIRST CELL of your code (not your full code!) using the following format:
 
 <goal>
-The explanation of your code. You should describe the desired exeuction time and output of your code. Explain any modifications you made and how to interpret the output. 
+The explanation of your first cell. You should describe the desired exeuction time and output of this cell. Explain how to interpret the execution output. 
 </goal>
 
 <code>
-The full python code. This should be a self-contained script other than a code segment. propose full code even if it is a minor change. Do not wrap the code in a markdown block. Your code will be stored in ./code.py and executed by `python code.py`.
+The content of this cell. Do not wrap the code in a markdown block. Your code will be appended to the notebook, which is stored at ./agent.ipynb. Your code must print necessary information after each milestone.
 </code>
 
-Remember, all input files are stored in ../input folder. DO NOT USE /kaggle/input paths or other absolute paths in your code. Now, propose your first implementation.
+You should propose exactly ONE code cell per iteration and I'll tell you the output of your code cell. If you succesfully produce submission.csv, please report the final verification metric in the following way:
+
+<metric>
+The value of the **final metric** (not the training loss value) if the code execution was successful, producing submission.csv and the metric is calculated properly on the full test set (not dummy or partial). Otherwise, if the code execution was terminated or output messages indicate any training/execution failure, leave it as None. This section should be a real number or None. Report decimal number if the metric is a float.
+</metric>
 """
         self.llm.add_message(role="system", content=prompt)
         self._add_message("agent", prompt)
-
-    def _generate_report(self) -> Pipeline:
-        if isinstance(self.best_metric, WorstMetricValue):
-            prompt = f"""
-Your code failed to produce a submission. Please summarize your code and explain why it failed. You should include the difficulties you encountered and possible bugs.
-"""
+    
+    def _get_feedback_prompt(self, result: ExecutionResult) -> str:
+        """Generate feedback prompt based on execution result."""
+        prompt = f"The execution takes {result.execution_time:.2f} seconds and ends with the following output:\n"
+        prompt += f"```\n{self._truncate_result_output(result.output)}\n```"
+        
+        if not result.success:
+            if result.timeout:
+                prompt += "Execution timed out and was killed by system.\n"
+            elif result.llm_terminated:
+                prompt += f"Execution was terminated by LLM with reason: {result.error}\n"
+            else:
+                prompt += f"Execution terminated unexpectedly. Traceback: {result.error}\n"
+            prompt += "Please investigate the issue and propose a fix. Your next code cell should address the problem identified in the previous cell. Consistent with Jupyter Notebook, all current temporary variables have been loaded into memory.\n"
         else:
-            prompt = f"""
-The best metric value across all iterations is {self.best_metric}. Please summarize the code that achieved this metric value. Explain your code with the best score and the modifications you made to the codebase (if the codebase is provided).
-"""
-        prompt += f"""
+            prompt += "Execution completed successfully. You should keep updating your code (e.g., try different hyperparameters, augmentations, model architectures) after you have made successful submission. Your best submission will be recorded.\n"
+
+        return prompt
+
+    # ============================================================================
+    # RESULT PROCESSING AND REPORT GENERATION
+    # ============================================================================
+    
+    def _truncate_result_output(self, output: str) -> str:
+        """Truncate long output for better readability."""
+        output_lines = output.splitlines()
+        if len(output_lines) <= 80:
+            return output 
+        
+        # Try to omit long sentences 
+        filtered_lines = [line for line in output_lines if len(line.split()) < 100]
+
+        if len(filtered_lines) <= 80:
+            return "\n".join(filtered_lines)
+
+        # If still too long, truncate the output
+        return "\n".join(filtered_lines[:40] + ["... (truncated) ..."] + filtered_lines[-40:])
+    
+    def _process_metric_report(self, response):
+        """Process metric report from LLM response and update best metrics."""
+        if "none" in response['metric'][0].lower():
+            return
+        
+        metric = MetricValue(float(response['metric'][0]), maximize = not self.is_lower_better)
+        self.logger.info(f"Captured metric: {metric}")
+        if metric > self.best_metric:
+            self.best_metric = metric
+            self.best_code = deepcopy(self.jupyter_session.cells)
+            shutil.copyfile(
+                self.cfg.agent_workspace_dir / "submission.csv",
+                self.best_submission_path
+            )
+            self.metric_updater.post(metric, self.best_submission_path)
+    
+    def _generate_report(self) -> Pipeline:
+        """Generate final report and pipeline summary."""
+        prompt = f"""
+{self.last_feedback}
+
+Please summarize the full code that achieved the best metric value. Explain your code with the best score and the modifications you made to the codebase (if the codebase is provided).
+
 You should respond in the following format:
+
+<metric>If your last code cell produced a submission file, include the evaluation metric here. Do not provide any other information in this tag. If no submission was produced, leave this as None.</metric>
 
 <description>
 An extremely detailed description of the pipeline that generated the best results. All hyperparameters, training settings, model architectures, feature engineering, validation metric, and any other relevant information should be included. Describe potential improvements and future work. Include other parts mentioned above. Describe the checkpoint files you generated and how to load them.
@@ -290,12 +394,13 @@ An extremely detailed description of the weaknesses of the pipeline you found du
 """
         self.llm.add_message(role="user", content=prompt)
         self._add_message("agent", prompt)
-        report = self.llm.query(required_fields=["description", "code", "suggestions"], check_fn = lambda x: len(x["suggestions"]) == 1)
+        report = self.llm.query(required_fields=["metric", "description", "code", "suggestions"], check_fn = lambda x: len(x["suggestions"]) == 1)
+        self._process_metric_report(report)
         self._add_message("llm", report['_raw_content'])
         submission = self.cfg.agent_workspace_dir / "submission.csv"
         if isinstance(self.best_metric, WorstMetricValue):
             submission = None
-
+        
         # Mark coder as completed and save final state
         try:
             coder_state = {
@@ -316,13 +421,16 @@ An extremely detailed description of the weaknesses of the pipeline you found du
             self.logger.info(f"🏁 Coder {self.draft.id} completed with final best metric: {self.best_metric}")
         except Exception as e:
             self.logger.warning(f"Warning: Failed to save final coder state: {e}")
+        
+        full_code = self.best_code.get_notebook_code() if self.best_code is not None else "Not available"
+        self.logger.info(f"Full code: {full_code}")
 
         return Pipeline(
             id=self.draft.id,
             title=self.draft.title,
             description=report["description"][0],
             code=report["code"][0],
-            full_code=self.best_code,
+            full_code=full_code,
             referenced_private_data=False,
             metric=self.best_metric,
             submission=submission,
@@ -331,170 +439,76 @@ An extremely detailed description of the weaknesses of the pipeline you found du
             datasets=self.draft.datasets,
         )
 
-    def _summarize_result(self, code: str, goal: str, result: ExecutionResult) -> str:
-        if len(result.final_output) > 100000:
-            result.final_output = result.final_output[:50000] + "\n... (truncated) ... \n" + result.final_output[-50000:]
+    # ============================================================================
+    # MAIN EXECUTION FLOW
+    # ============================================================================
 
-        prompt = f"""
-You are a Kaggle grandmaster attending a competition. You have written code to solve this task and now need to evaluate the output of the code execution. You should determine if there were any bugs as well as report the empirical findings. Include essential information about the result, including warnings, errors, and the final metric. Determine whether the evaluation result is valid. 
-
-<code>
-{code} 
-</code>
-
-<goal>
-{goal}
-</goal>
-
-<execution_output>
-{result.final_output}
-</execution_output>
-"""
-        if result.terminated_unexpectedly or result.exit_code != 0:
-            if result.llm_termination_reason is not None:
-                prompt += f"""
-The code execution was manually terminated with the following reason:
-
-<reason>
-{result.llm_termination_reason}
-</reason>
-"""
-            else:
-                if result.timeout:
-                    prompt += "\nThe code execution was terminated due to timeout. \n"
-                else:
-                    prompt += "\nThe code execution was terminated unexpectedly. \n"
-            prompt += "Please carefully analyze the execution output and determine the reason for the termination. You should give a suggestion to fix the bug."
-        else:
-            prompt += "\nThe code execution was successful. Please verify the output of the code execution and report if the evaluation result is valid. Mention if the evaluation metric is calculated properly and match the metric in the task description.\n"
-
-        prompt += f"""
-You should respond in the following format:
-
-<abstract>
-Select representative segments of the output log and mark the remainder as ellipses. This should contain any critical information, including errors, loss values, final metric values, debug messages, etc.
-</abstract>
-
-<summary>
-A short summary (4-5 sentences) describing the empirical findings. Examine whether its goals are achieved. Summarize the output and mention if the submission.csv was properly produced. Give suggestions to fix the bug if the code execution was terminated unexpectedly.
-</summary>
-
-<metric>
-You should report the value of the **final metric** (not the training loss value) if the code execution was successful, producing submission.csv and the metric is calculated properly on the full test set (not dummy or partial). Otherwise, if the code execution was terminated or output messages indicate any training/execution failure, leave it as None. This section should be a real number or None. Report decimal number if the metric is a float.
-</metric>
-"""
-
-        def check_fn(response):
-            metric = response["metric"][0]
-            if "none" in metric.lower():
-                return True 
-            try: 
-                metric = float(metric)
-                return metric is not None
-            except:
-                return False
-
-        response = query_llm(self.cfg.llm, messages=[{
-            "role": "system",
-            "content": prompt
-        }], required_fields=["abstract", "summary", "metric"], check_fn=check_fn, logger=self.llm_logger)
-
-        if "none" in response["metric"][0].lower():
-            metric = WorstMetricValue()
-        else:
-            metric = MetricValue(float(response["metric"][0]), maximize=not self.is_lower_better)
-
-        submission = self.cfg.agent_workspace_dir / "submission.csv"
-        if not submission.exists():
-            metric = WorstMetricValue()
-        
-        if not isinstance(metric, WorstMetricValue):
-            self.metric_updater.post(metric, code, submission)
-            
-            if metric > self.best_metric:
-                old_best = self.best_metric
-                self.best_metric = metric
-                self.best_code = code
-                self.logger.info(f"🎯 Coder {self.draft.id} local best metric updated: {old_best} -> {self.best_metric}")
-                shutil.copy(submission, self.best_submission_path)
-                self._save_state()
-        
-        return f"""
-<execution_time>
-{result.execution_time} seconds
-</execution_time>
-
-<timeout>
-{result.timeout}
-</timeout>
-
-<summary>
-{response["summary"][0]}
-</summary>
-
-<metric>
-{metric}
-</metric>
-
-<abstract>
-{response["abstract"][0]}
-</abstract>
-"""
-    
     def run(self) -> Pipeline:
+        """Main execution flow for the code agent."""
         self._post_initial_message()
+        
         for iteration in range(self.cfg.agent_num_iterations_code_agents):
+            self.logger.info(f"Iteration {iteration}")
             self.iteration = iteration
             
+            # Check time limit
             time_elapsed = time.time() - self.start_time
             if iteration + 1 == self.cfg.agent_num_iterations_code_agents \
                 or time_elapsed > self.cfg.agent_time_limit_code_agents:
                 self.llm.pop_message()
                 break 
-            
-            response = self.llm.query(required_fields=["code", "goal"])
+
+            # Get LLM response
+            if iteration:
+                response = self.llm.query(required_fields=["metric", "code", "goal"])
+                self._process_metric_report(response)
+            else:
+                response = self.llm.query(required_fields=["code", "goal"])
+
+            # Extract code and goal, update state
+            code, goal = response['code'][0], response['goal'][0]
             self._add_message("llm", response['_raw_content'])
-            self._update_code(response["code"][0])
+            self._update_code(code)
+
+            self.logger.info(f"Executing code with monitoring: {code}")
+            # Execute code with monitoring
+            self._execute_async(code, goal)
             
-            # Start async execution with real-time monitoring
-            self._execute_async(response["code"][0], response["goal"][0])
-            
-            # Wait for execution to complete (with timeout)
-            result = self._wait_for_execution(timeout=self.cfg.execution_timeout)
-            
-            if result is None:
-                # Execution timed out or failed
-                result = ExecutionResult(
-                    terminated_unexpectedly=True,
-                    timeout=True,
-                    execution_time=self.cfg.execution_timeout,
-                    final_output="Execution timed out or failed",
-                    success=False
-                )
+            result = self._wait_for_execution()
+            self.logger.info(f"output: {result.output}")
+            self.logger.info(f"error: {result.error}")
+            self.logger.info(f"success: {result.success}")
+            self.logger.info(f"execution_time: {result.execution_time}")
             
             # Final output update
-            output_lines = result.final_output.split('\n')
-            self._update_output(output_lines)
+            if result and result.output:
+                output_lines = result.output.split('\n')
+                self._update_output(output_lines)
 
-            result_summary = self._summarize_result(response["code"][0], response["goal"][0], result)
+            # Generate feedback and continue conversation
+            feedback_prompt = self._get_feedback_prompt(result)
+            self.last_feedback = feedback_prompt
+            feedback_prompt += """
+Now, respond in the following format:
 
-            prompt = f"""
-Remaining steps: {self.cfg.agent_num_iterations_code_agents - iteration - 1}
-I ran your code and summarized the execution result:
-{result_summary}
+<metric>The evaluation metric of your submission. Only include this part if your last code cell produced a full, successful submission file. Otherwise, leave this as None.</metric>
 
-Now, please choose your next action and propose code using the same response format as before. Remember, output a self-contained code, no part of it should be omitted. Keep the final validation metric same as the metric mentioned in task description. If your next code will generate checkpoints, **don't give them the same name as previous ones**. If previous code crashed after generating checkpoints and you are fixing the bug, you MUST load the previous checkpoints instead of training from scratch.
+<goal>Describe the goal and how to inspect the output of your next code cell</goal>
 
-A) Fix runtime errors (if any)
-B) Do hyperparameter tuning
-C) Include ideas that were not implemented yet
-D) Add possible improvements
-E) Run on a larger scale (moderately increase training epochs, etc.). You should refer to the previous execution time we reported. Remember your code will be killed if timeout.
+<code>
+The content of your next code cell. Following the previous format, do not wrap your code within markdown code marks. You should keep updating your code (e.g., try different hyperparameters, augmentations, model architectures) even after you have made successful submission. Always evaluate your submission and print the metric on a validation set.
+</code>
 """
-            self.llm.add_message(role="user", content=prompt)
-            self._add_message("agent", prompt)
 
+            self.llm.add_message(role="user", content=feedback_prompt)
+            self._add_message("agent", feedback_prompt)
+
+        # Finalize and generate report
         if self.best_submission_path.exists():
             shutil.copy(self.best_submission_path, self.cfg.agent_workspace_dir / "submission.csv")
-        return self._generate_report()
         
+        result = self._generate_report()
+        self.jupyter_session.shutdown()
+        del self.jupyter_session
+
+        return result

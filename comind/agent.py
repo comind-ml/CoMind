@@ -4,8 +4,11 @@ import shutil
 import queue
 import time
 import threading
+import subprocess
+import sys
 from copy import deepcopy
 from rich.status import Status
+from datetime import datetime
 from comind.config import Config
 from pathlib import Path
 from comind.community import Pipeline, Dataset, Draft
@@ -21,26 +24,24 @@ class MetricUpdater:
         self.start_time = cfg.start_time
         self.agent = agent
         self.logger = get_logger("MetricUpdater", cfg.agent_workspace_dir / "metric.log")
+        self.logger.info(f"MetricUpdater initialized with best metric: {best_metric}")
 
-    def post(self, metric: MetricValue, code: str, submission: Path):
+    def post(self, metric: MetricValue, submission: Path):
         if not isinstance(metric, WorstMetricValue):
             self.logger.info(f"{metric} posted from path {submission}")
-            self.q.put((metric, code, submission))
+            self.q.put((metric, submission))
     
     def stop(self):
         self._stop = True
-        self.q.put((WorstMetricValue(), None, None))
+        self.q.put((WorstMetricValue(), None))
 
-    def _update_best_metric(self, metric: MetricValue, code: str, submission: Path):
+    def _update_best_metric(self, metric: MetricValue, submission: Path):
         if metric > self.best_metric:
             old_best = self.best_metric
             self.best_metric = metric 
             time_elapsed = time.time() - self.start_time
 
             shutil.copy(submission, self.cfg.agent_workspace_dir / "submission" / f"submission_{time_elapsed}.csv")
-
-            with open(self.cfg.agent_workspace_dir / "code" / f"submission_{time_elapsed}.py", "w") as f:
-                f.write(code)
 
             self.logger.info(f"🏆 Global best metric updated: {old_best} -> {self.best_metric}")
 
@@ -54,11 +55,12 @@ class MetricUpdater:
     def run(self):
         self._stop = False
         while not self._stop:
-            metric, code, submission = self.q.get()
-            if code:
-                self._update_best_metric(metric, code, submission)
+            metric, submission = self.q.get()
+            if not isinstance(metric, WorstMetricValue):
+                self._update_best_metric(metric, submission)
 
 from comind.coder import CodeAgent
+from comind.prepare import PrepareAgent
 
 class Agent:
     def __init__(self, cfg: Config, fetch_data_only=False):
@@ -66,15 +68,20 @@ class Agent:
         self.llm_cfg                  = cfg.llm
         self.ideas : list[str]        = []
         self.reports : list[Pipeline] = []
+        self.reproduced_reports : list[str] = []
         self.code_agents              = []
         self.datasets: dict[str, Dataset] = {}
         self.task_desc                = cfg.competition_task_desc
 
         (self.cfg.agent_workspace_dir / "submission").mkdir(parents=True, exist_ok=False)
-        (self.cfg.agent_workspace_dir / "code").mkdir(parents=True, exist_ok=False)
-
+        
         self.logger = get_logger("Agent", cfg.agent_workspace_dir / "agent.log")
         self.llm_logger = get_logger("LLM (Agent)", cfg.agent_workspace_dir / "llm.log", file_only=True)
+        
+        # Setup conda workspace configuration
+        self.conda_envs_dir           = self._setup_conda_workspace(self.cfg.agent_workspace_dir)
+        self.cfg.conda_envs_dir       = self.conda_envs_dir
+
         self.is_lower_better          = self._query_is_lower_better()
 
         with Status("Fetching external data..."):
@@ -114,6 +121,56 @@ class Agent:
         
         return state_file
 
+    def _setup_conda_workspace(self, workspace_dir: Path) -> Path:
+        """Setup conda directories for workspace-local environments."""
+        # Create conda environments directory
+        conda_envs_dir = workspace_dir / "conda_envs"
+        conda_envs_dir.mkdir(parents=True, exist_ok=True)
+        
+        self.logger.info(f"Setup conda workspace directory at {conda_envs_dir}")
+        return conda_envs_dir
+    
+    def _clone_conda_environment(self, source_env_name: str, target_env_name: str):
+        """Clone a conda environment to workspace-local location using explicit prefix.
+        If target already exists, remove it first.
+        """
+        try:
+            # Resolve source and target
+            if source_env_name != self.cfg.agent_base_conda_env_name:
+                source_env_name = self.conda_envs_dir / source_env_name
+            target_env_path = self.conda_envs_dir / target_env_name
+
+            # If target exists, remove it first
+            if target_env_path.exists():
+                self.logger.info(f"Target env {target_env_path} already exists. Removing...")
+                try:
+                    subprocess.run(
+                        ['conda', 'env', 'remove', '--prefix', str(target_env_path), '-y'],
+                        check=True, capture_output=True, text=True
+                    )
+                    self.logger.info(f"Removed existing env at {target_env_path}")
+                except subprocess.CalledProcessError as e:
+                    self.logger.error(f"Failed to remove existing env: {e}")
+                    self.logger.error(f"stdout: {e.stdout}")
+                    self.logger.error(f"stderr: {e.stderr}")
+                    raise
+
+            # Clone the environment
+            self.logger.info(f"Cloning conda environment {source_env_name} -> {target_env_path}")
+            subprocess.run(
+                ['conda', 'create', '--prefix', str(target_env_path), '--clone', str(source_env_name), '-y'],
+                check=True, capture_output=True, text=True
+            )
+
+            self.logger.info(f"Successfully cloned conda environment to {target_env_path}")
+            return target_env_path
+
+        except subprocess.CalledProcessError as e:
+            self.logger.error(f"Failed to clone conda environment: {e}")
+            self.logger.error(f"stdout: {e.stdout}")
+            self.logger.error(f"stderr: {e.stderr}")
+            raise
+            
     def _query_is_lower_better(self) -> bool:
         prompt = f"""
 You are a Kaggle competitor tasked with achieving the highest possible score on the competition. 
@@ -292,7 +349,7 @@ Your response must contain summary, suggestions and code sections.
             base_path=kernel_path.parent
         )
 
-        metric = WorstMetricValue() if "score" not in metadata else MetricValue(metadata["score"])
+        metric = WorstMetricValue() if "score" not in metadata else MetricValue(metadata["score"], maximize=not self.is_lower_better)
         
         if submission_path and not submission_path.exists():
             submission_path = None
@@ -322,6 +379,12 @@ Your response must contain summary, suggestions and code sections.
             if report.id == id:
                 return report 
         return None
+    
+    def _update_report(self, id: str, report: Pipeline):
+        for i, report in enumerate(self.reports):
+            if report.id == id:
+                self.reports[i] = report
+                return
     
     def _brainstorm(self):
         prompt = f"""
@@ -437,8 +500,8 @@ Respond in the following format:
 <pipeline>
 <title>The title of the pipeline. This should only contain letters, numbers, and spaces. Do not include any other characters. The title should contain 30 characters at most.</title>
 <description>An extremely detailed description of the pipeline. Include model architecture, training strategies, hyperparameters, evaluation metrics and input/output details. Read the **submission format** requirements in the task description carefully. The submission format requirement is possible to be different from the training dataset. **THIS IS EXTREMELY IMPORTANT**. Mention in the pipeline descriptions and be sure to include the code that handles the input and output. If any datasets are referenced, explain the structure of each dataset and how to read them. If kernels are referenced, you must describe how to load their checkpoints, whether the submissions files exist, and their evaluation metrics if available. Mention how to compute the evaluation metric.</description>
-<datasets>a list of dataset ids referenced in this pipeline, separated by comma. e.g. alice/dataset1,bob/dataset2,etc. You can also include kernel ids for ensembling or loading checkpoints. Do not contain any spaces. If no datasets are referenced, leave this field empty.</datasets>
-<codebase>The codebase of the pipeline. The later implementation agent will use this codebase as a starting point. This field should either be None or a string exactly matching the id (not the title!) of a report in the reports section. Do not choose any reports that reference private data as the codebase.</codebase>
+<datasets>a list of dataset ids referenced in this pipeline, separated by comma. e.g. alice/dataset1,bob/dataset2,etc. You can also include kernel ids for ensembling or loading checkpoints. Do not contain any spaces. If no datasets are referenced, leave this field empty. Do not include dataset {self.cfg.competition_id}</datasets>
+<codebase>The codebase of the pipeline. The later implementation agent will use this codebase as a starting point. This field should either be a string exactly matching the id (not the title!) of a report in the reports section. Do not choose any reports that reference private data as the codebase.</codebase>
 <code>
 Python code segment for this pipeline. Make sure to include any important parts, especially those that handle input and output.
 </code>
@@ -511,6 +574,10 @@ Make sure all your pipelines are well-explained. If similar parts are used in mu
 
         return drafts
     
+    def _get_env_name(self, id: str) -> str:
+        import hashlib
+        return hashlib.md5(id.encode()).hexdigest()[:8]
+    
     def _setup_coder_workspace(self, draft: Draft, base_dir: Path):
         """ 
         file structure:
@@ -533,10 +600,39 @@ Make sure all your pipelines are well-explained. If similar parts are used in mu
             (base_dir / "input" / dataset.id).mkdir(parents=True, exist_ok=False)
             copytree(dataset.base_path, base_dir / "input" / dataset.id, use_symlinks=True)
         
+        source_env_name = self.cfg.agent_base_conda_env_name
         if draft.codebase:
             codebase_report = self._get_report_from_id(draft.codebase)
+            source_env_name = self._get_env_name(codebase_report.id)
             assert codebase_report is not None, f"Codebase {draft.codebase} not found in reports."
             copytree(codebase_report.output_dir, base_dir / "working", use_symlinks=False)
+        
+        # Use shorter name to avoid path length issues
+        target_env_name = self._get_env_name(draft.id)
+        
+        # Clone the environment
+        self._clone_conda_environment(source_env_name, target_env_name)
+    
+    def _setup_reproduce_workspace(self, report: Pipeline, base_dir: Path):
+        self.logger.info(f"Setting up reproduce workspace for {report.id}...")
+        self.logger.info(f"Base dir: {base_dir}")
+        (base_dir / "input" / self.cfg.competition_id).mkdir(parents=True, exist_ok=False)
+        (base_dir / "working").mkdir(parents=True, exist_ok=False)
+
+        copytree(self.cfg.competition_input_dir, base_dir / "input" / self.cfg.competition_id, use_symlinks=True)
+        extract_archives(base_dir / "input" / self.cfg.competition_id)
+
+        for dataset in report.datasets:
+            (base_dir / "input" / dataset.id).mkdir(parents=True, exist_ok=False)
+            copytree(dataset.base_path, base_dir / "input" / dataset.id, use_symlinks=True)
+        
+        copytree(report.output_dir, base_dir / "working", use_symlinks=False)
+        
+        source_env_name = self.cfg.agent_base_conda_env_name
+        target_env_name = self._get_env_name(report.id)
+        
+        # Clone the environment
+        self._clone_conda_environment(source_env_name, target_env_name)
 
     def _start_coder(self, draft: Draft) -> Pipeline:
         coder_cfg = deepcopy(self.cfg)
@@ -546,7 +642,8 @@ Make sure all your pipelines are well-explained. If similar parts are used in mu
             cfg=coder_cfg,
             draft=draft,
             is_lower_better=self.is_lower_better,
-            metric_updater=self.metric_updater
+            metric_updater=self.metric_updater,
+            env_name=self._get_env_name(draft.id)
         )
         
         coder_data = {
@@ -587,6 +684,72 @@ Make sure all your pipelines are well-explained. If similar parts are used in mu
 
         self.metric_updater.stop()
         return results
+    
+    def _reproduce_report(self, report: Pipeline) -> Pipeline:
+        prepare_cfg = deepcopy(self.cfg)
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        base_dir = self.cfg.agent_workspace_dir / report.id / f"prepare_{timestamp}"
+        self._setup_reproduce_workspace(report, base_dir)
+        prepare_cfg.agent_workspace_dir = base_dir / "working"
+        prepare = PrepareAgent(
+            cfg=prepare_cfg,
+            pipeline=report,
+            is_lower_better=self.is_lower_better,
+            metric_updater=self.metric_updater,
+            env_name=self._get_env_name(report.id)
+        )
+        return prepare.run()
+
+    def _reproduce_report_with_result(self, codebase: str, results_list, index: int):
+        try:
+            report = self._get_report_from_id(codebase)
+            pipeline = self._reproduce_report(report)
+            results_list[index] = (codebase, pipeline)
+        except Exception as e:
+            import traceback
+            self.logger.error(f"Error in reproducing report {codebase}: {e}")
+            self.logger.error("Traceback:")
+            self.logger.error(traceback.format_exc())
+            results_list[index] = (codebase, None)
+
+    def _reproduce_reports(self, pipelines: list[Draft]):
+        codebases = []
+        for pipeline in pipelines:
+            if pipeline.codebase and pipeline.codebase not in codebases:
+                if pipeline.codebase not in self.reproduced_reports:
+                    codebases.append(pipeline.codebase)
+        
+        if not codebases:
+            return
+            
+        results = [None] * len(codebases)
+        
+        threads = []
+        for i, codebase in enumerate(codebases):
+            thread = threading.Thread(
+                target=self._reproduce_report_with_result, 
+                args=(codebase, results, i)
+            )
+            thread.start()
+            threads.append(thread)
+        
+        for thread in threads:
+            thread.join()
+        
+        # Process results
+        for codebase, pipeline in results:
+            if pipeline:
+                self._update_report(codebase, pipeline)
+                self.reproduced_reports.append(codebase)
+    
+    def _refetch_codebases(self, pipelines: list[Draft]) -> list[Draft]:
+        new_pipelines = []
+        for pipeline in pipelines:
+            new_pipeline = deepcopy(pipeline)
+            if pipeline.codebase:
+                new_pipeline.codebase_content = self._get_report_from_id(pipeline.codebase).full_code
+            new_pipelines.append(new_pipeline)
+        return new_pipelines
 
     def run(self, start_monitor=False):
         # Save initial state and provide monitor instructions
@@ -611,6 +774,10 @@ Make sure all your pipelines are well-explained. If similar parts are used in mu
             with Status("Generating pipelines..."):
                 pipelines = self._generate_pipelines()
 
+            with Status("Reproducing codebases..."):
+                self._reproduce_reports(pipelines)
+            pipelines = self._refetch_codebases(pipelines)
+
             results: list[Pipeline] = []
             def run_coders_and_store_results():
                 nonlocal results
@@ -625,6 +792,7 @@ Make sure all your pipelines are well-explained. If similar parts are used in mu
             for report in results:
                 if report is not None:
                     self.reports.append(report)
+                    self.reproduced_reports.append(report.id)
                     self.datasets[report.id] = Dataset(
                         id=report.id,
                         name=report.title,

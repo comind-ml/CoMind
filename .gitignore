@@ -13,3 +13,4 @@ compressed
 datasets.tar.xz
 *.txt
 upload.py
+.venv

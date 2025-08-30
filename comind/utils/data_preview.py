@@ -15,6 +15,7 @@ code_files = {".py", ".sh", ".yaml", ".yml", ".md", ".html", ".xml", ".log", ".r
 # we treat these files as text (rather than binary) files
 plaintext_files = {".txt", ".csv", ".json", ".tsv"} | code_files
 exclude_files = {"kernel-metadata.json", "dataset-metadata.json", "model-metadata.json"}
+exclude_dirs = {".venv"}
 
 def get_file_len_size(f: Path) -> tuple[int, str]:
     """
@@ -51,6 +52,8 @@ def _walk(path: Path):
     """Recursively walk a directory (analogous to os.walk but for pathlib.Path)"""
     for p in sorted(Path(path).iterdir()):
         if p.is_dir():
+            if p.name in exclude_dirs:
+                continue
             yield from _walk(p)
             continue
         yield p
@@ -156,8 +159,6 @@ def generate(base_path, include_file_details=True, simple=False):
 
             if fn.suffix == ".csv":
                 out.append(preview_csv(fn, file_name, simple=simple))
-            elif fn.suffix == ".json":
-                out.append(preview_json(fn, file_name))
             elif fn.suffix in plaintext_files:
                 if get_file_len_size(fn)[0] < 30:
                     with open(fn) as f:
@@ -169,12 +170,12 @@ def generate(base_path, include_file_details=True, simple=False):
     result = "\n\n".join(out)
 
     # if the result is very long we generate a simpler version
-    if len(result) > 6_0000 and not simple:
+    if len(result) > 1_0000 and not simple:
         return generate(
             base_path, include_file_details=include_file_details, simple=True
         )
     # if still too long, we truncate
-    if len(result) > 6_0000 and simple:
-        return result[:6_0000] + "\n... (truncated)"
+    if len(result) > 1_0000 and simple:
+        return result[:1_0000] + "\n... (truncated)"
 
     return result
