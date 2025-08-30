@@ -9,13 +9,13 @@ llm:
   timeout: 600
 
 agent:
-  num_code_agents: 2 # Number of code agents
+  num_code_agents: 4 # Number of code agents
   num_iterations: 8
   num_iterations_code_agents: 30
   time_limit_code_agents: 18000
 
   max_referred_discussions: 10
-  max_referred_kernels: 2
+  max_referred_kernels: 5
 
   workspace_dir: workspace
   external_data_dir: datasets 

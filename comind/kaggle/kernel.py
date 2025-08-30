@@ -107,8 +107,7 @@ def download_kernel_output(cfg: Config, kernel_id: str) -> Path:
 def download_kernels(cfg: Config, is_lower_better: bool) -> list[Path]:
     kernels = list_kernels(cfg.competition_id)
 
-    # hottest_kernels = sorted(deepcopy(kernels), key=lambda x: x["totalVotes"] if "totalVotes" in x else 0, reverse=True)
-    hottest_kernels = []
+    hottest_kernels = sorted(deepcopy(kernels), key=lambda x: x["totalVotes"] if "totalVotes" in x else 0, reverse=True)
 
     best_kernels = sorted(deepcopy(kernels), key=lambda x: MetricValue(x["bestPublicScore"], maximize=not is_lower_better) if "bestPublicScore" in x else WorstMetricValue(), reverse=True)
 
