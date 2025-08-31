@@ -115,9 +115,6 @@ def download_kernels(cfg: Config, is_lower_better: bool) -> list[Path]:
     hottest_kernels = hottest_kernels[:min(k, len(hottest_kernels))]
     best_kernels = best_kernels[:min(k, len(best_kernels))]
 
-    if len(best_kernels) > 0:
-        print(best_kernels[0]['bestPublicScore'])
-
     # Remove duplicates by scriptUrl
     seen_urls = set()
     unique_kernels = []

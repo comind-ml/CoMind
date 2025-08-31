@@ -501,7 +501,7 @@ Respond in the following format:
 <title>The title of the pipeline. This should only contain letters, numbers, and spaces. Do not include any other characters. The title should contain 30 characters at most.</title>
 <description>An extremely detailed description of the pipeline. Include model architecture, training strategies, hyperparameters, evaluation metrics and input/output details. Read the **submission format** requirements in the task description carefully. The submission format requirement is possible to be different from the training dataset. **THIS IS EXTREMELY IMPORTANT**. Mention in the pipeline descriptions and be sure to include the code that handles the input and output. If any datasets are referenced, explain the structure of each dataset and how to read them. If kernels are referenced, you must describe how to load their checkpoints, whether the submissions files exist, and their evaluation metrics if available. Mention how to compute the evaluation metric.</description>
 <datasets>a list of dataset ids referenced in this pipeline, separated by comma. e.g. alice/dataset1,bob/dataset2,etc. You can also include kernel ids for ensembling or loading checkpoints. Do not contain any spaces. If no datasets are referenced, leave this field empty. Do not include dataset {self.cfg.competition_id}</datasets>
-<codebase>The codebase of the pipeline. The later implementation agent will use this codebase as a starting point. This field should either be a string exactly matching the id (not the title!) of a report in the reports section. Do not choose any reports that reference private data as the codebase.</codebase>
+<codebase>The codebase of the pipeline. The later implementation agent will use this codebase as a starting point. This field should either be a string exactly matching the id (not the title!) of a report in the reports section. Do NOT choose any reports that reference private data as the codebase.</codebase>
 <code>
 Python code segment for this pipeline. Make sure to include any important parts, especially those that handle input and output.
 </code>
@@ -628,11 +628,18 @@ Make sure all your pipelines are well-explained. If similar parts are used in mu
         
         copytree(report.output_dir, base_dir / "working", use_symlinks=False)
         
+        # For reproduce workspace, always use the base conda environment as source
+        # since we're reproducing from scratch
         source_env_name = self.cfg.agent_base_conda_env_name
         target_env_name = self._get_env_name(report.id)
         
-        # Clone the environment
-        self._clone_conda_environment(source_env_name, target_env_name)
+        # Check if target environment already exists, if so, we can skip cloning
+        target_env_path = self.conda_envs_dir / target_env_name
+        if target_env_path.exists():
+            self.logger.info(f"Target environment {target_env_path} already exists, skipping clone")
+        else:
+            # Clone the environment
+            self._clone_conda_environment(source_env_name, target_env_name)
 
     def _start_coder(self, draft: Draft) -> Pipeline:
         coder_cfg = deepcopy(self.cfg)

@@ -29,7 +29,8 @@ class PrepareAgent:
     def _post_initial_message(self):
         data_preview = generate((self.cfg.agent_workspace_dir.parent / "input"))
         prompt = f"""
-You are a professional Kaggle competitor and tasked with preparing the environment for a script. Your goal is to setup the enrionment and correct minor issues (e.g., incorrect paths, etc.) in the code, until the loss curve is stable and the final submission file is generated at ./submission.csv. 
+You are a professional Kaggle competitor and tasked with preparing the environment for a script. Your goal is to setup the enrionment and correct minor issues (e.g., incorrect paths, etc.) in the code, until the loss curve is stable and the final submission file is generated at ./submission.csv. If the code did not print out the evaluation metric, you should evaluate the metric on a handout dataset and report it. Do not report dummy metric.
+
 <task_desc>\n{self.cfg.competition_task_desc}\n</task_desc>
 
 <code>\n{self.pipeline.full_code}\n</code>
@@ -38,13 +39,15 @@ This code runs smoothly on kaggle's default settings. However, different from ka
 
 <data_preview>\n{data_preview}\n</data_preview>
 
-You are allowed to install any packages by running `pip install <package_name>` in your script. A persistent Jupyter Notebook session is maintained. 
+You are allowed to install any packages by running `pip install <package_name>` in your script. A persistent Jupyter Notebook session is maintained. Your installation will take effect in the NEXT cell. Do not install and test the packages in the same cell. **You must separate the installation and importing in different cells.**
 
-You should decompose the full code into several code cells and I will execute them sequentially. Your proposed code cell will be directly appended to the notebook and executed. You should separate data loading, training and evaluation in different cells. DO NOT change the pipeline's code structure and any implementation details, including hyperparameters, model architectures, data augmentations, etc. Just correct the minor issues.
+You should decompose the full code into several code cells and I will execute them sequentially. Your proposed code cell will be directly appended to the notebook and executed. You should separate data loading, training and evaluation in different cells. DO NOT change the pipeline's code structure and any implementation details, including hyperparameters, model architectures, data augmentations, etc. Just correct the minor issues. Do not generate dummy submission file. You must strictly follow the code structure and implementation details.
 
-You should correct the code until the loss curve is stable and you have captured the final evaluation metric.
+The script may generate submission file multiple times. You should keep correct the code until the final submission file is generated. Do not report any metric before you have executed all cells in the original code.
 
-You MUST print out the final evaluation metric before generating the submission file. If the code does not print out the metric, **it is your responsibility to compute the metric and print it out**.
+You should correct the code until the loss curve is stable and you have captured the **final** evaluation metric.
+
+You MUST print out the final evaluation metric before generating the last submission file. If the code does not print out the metric, **it is your responsibility to compute the metric and print it out**.
 
 Now, please propose THE FIRST CELL (not your full code!) using the following format:
 
@@ -122,11 +125,11 @@ The content of this cell. Do not wrap the code in a markdown block. Your code wi
 Your responses should always contain <goal> (even if you are reporting the metric) and <code> tags. Respond in the following format:
 
 <goal>
-Describe the goal of this cell and the expected output. Mention any changes you made to the code and how to inspect the results. If all the issues are resolved and you have captured the final evaluation metric, report the metric here instead of the goal. Report decimal number if the metric is a float. Do not change the name of the tag even if you are reporting the metric.
+Describe the goal of this cell and the expected output. Mention any changes you made to the code and how to inspect the results. If all the issues are resolved and you have captured the final evaluation metric, report the metric here instead of the goal. Report decimal number if the metric is a float. Do not change the name of the tag even if you are reporting the metric. Do not report any metric before you have executed all cells in the original code.
 </goal>
 
 <code>
-The content of the next cell. Do not wrap the code in a markdown block. Your code will be appended to the notebook. If all the issues are resolved, submission file is generated at ./submission.csv and you have captured the final evaluation metric, leave this as None. e.g. <code>None</code>
+The content of the next cell. Do not wrap the code in a markdown block. Your code will be appended to the notebook. If all the issues are resolved, the final submission file is generated at ./submission.csv and you have captured the final evaluation metric, leave this as None. e.g. <code>None</code>. Do not leave this as None before you have executed all cells in the original code.
 </code>
 """
 

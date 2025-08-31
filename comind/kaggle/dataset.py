@@ -16,14 +16,16 @@ def download_model(cfg: Config, model_id: str) -> Path:
     download_dir = cfg.agent_external_data_dir / model_id
     model_id = '/'.join([part[0].lower() + part[1:] for part in model_id.split('/')])
 
-    if download_dir.exists() and len(list(download_dir.iterdir())) > 0:
-        print(f"Download directory {download_dir} already exists, skipping download")
+    target_dir = cfg.agent_external_data_dir / raw_model_id
+
+    if target_dir.exists() and len(list(target_dir.iterdir())) > 0:
+        print(f"Download directory {target_dir} already exists, skipping download")
         return download_dir
     
     download_dir.mkdir(parents=True, exist_ok=True)
 
     try:
-        target_dir = kagglehub.model_download(model_id)
+        target_dir = kagglehub.model_download(raw_model_id)
         shutil.move(target_dir, download_dir)
 
         api = authenticate_kaggle_api()

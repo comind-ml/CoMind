@@ -15,11 +15,11 @@ agent:
   time_limit_code_agents: 18000
 
   max_referred_discussions: 10
-  max_referred_kernels: 5
+  max_referred_kernels: 3
 
   workspace_dir: workspace
   external_data_dir: datasets 
-  base_conda_env_name: comind-aug
+  base_conda_env_name: comind
 
 execution:
   inspect_interval: 1200

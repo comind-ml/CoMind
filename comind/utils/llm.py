@@ -26,6 +26,7 @@ def query_llm_raw(cfg: LLMConfig, messages: list[dict], logger: Logger = None) -
                 logger.info(response)
             if not response.choices[0].finish_reason == "stop":
                 continue 
+            
             return response.choices[0].message.content
         except Exception as e:
             if logger:
