@@ -19,6 +19,7 @@ agent:
   workspace_dir: workspace
   external_data_dir: datasets 
   base_conda_env_name: comind
+  submission_file_name: submission.csv
 
 execution:
   inspect_interval: 1200

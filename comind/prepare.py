@@ -18,6 +18,7 @@ class PrepareAgent:
         self.pipeline = pipeline
         self.metric_updater = metric_updater
         self.is_lower_better = is_lower_better
+        self.submission_name = cfg.agent_submission_file_name
 
         self.logger = get_logger(f"prepare-{pipeline.id}", self.cfg.agent_workspace_dir / "prepare.log")
         self.llm_logger = get_logger(f"llm-{pipeline.id}", self.cfg.agent_workspace_dir / "llm.log", file_only=True)
@@ -29,7 +30,7 @@ class PrepareAgent:
     def _post_initial_message(self):
         data_preview = generate((self.cfg.agent_workspace_dir.parent / "input"))
         prompt = f"""
-You are a professional Kaggle competitor and tasked with preparing the environment for a script. Your goal is to setup the enrionment and correct minor issues (e.g., incorrect paths, etc.) in the code, until the loss curve is stable and the final submission file is generated at ./submission.csv. If the code did not print out the evaluation metric, you should evaluate the metric on a handout dataset and report it. Do not report dummy metric.
+You are a professional Kaggle competitor and tasked with preparing the environment for a script. Your goal is to setup the environment and correct minor issues (e.g., incorrect paths, etc.) in the code, until the loss curve is stable and the final submission file is generated at ./{self.submission_name}. If the code did not print out the evaluation metric, you should evaluate the metric on a handout dataset and report it. Do not report dummy metric.
 
 <task_desc>\n{self.cfg.competition_task_desc}\n</task_desc>
 
@@ -129,7 +130,7 @@ Describe the goal of this cell and the expected output. Mention any changes you 
 </goal>
 
 <code>
-The content of the next cell. Do not wrap the code in a markdown block. Your code will be appended to the notebook. If all the issues are resolved, the final submission file is generated at ./submission.csv and you have captured the final evaluation metric, leave this as None. e.g. <code>None</code>. Do not leave this as None before you have executed all cells in the original code.
+The content of the next cell. Do not wrap the code in a markdown block. Your code will be appended to the notebook. If all the issues are resolved, the final submission file is generated at ./{self.submission_name} and you have captured the final evaluation metric, leave this as None. e.g. <code>None</code>. Do not leave this as None before you have executed all cells in the original code.
 </code>
 """
 
@@ -144,7 +145,7 @@ The content of the next cell. Do not wrap the code in a markdown block. Your cod
         self.jupyter_session.shutdown()
         del self.jupyter_session
 
-        submission_path = self.cfg.agent_workspace_dir / "submission.csv"
+        submission_path = self.cfg.agent_workspace_dir / self.submission_name
         self.metric_updater.post(metric, submission_path)
 
         return Pipeline(

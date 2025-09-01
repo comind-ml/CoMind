@@ -4,8 +4,8 @@ competition:
   task_desc: null  # Path to the competition task description
 
 llm:
-  model: o4-mini
-  max_retries: 10
+  model: gpt-5-mini
+  max_retries: 20
   timeout: 600
 
 agent:
@@ -15,14 +15,15 @@ agent:
   time_limit_code_agents: 18000
 
   max_referred_discussions: 10
-  max_referred_kernels: 3
+  max_referred_kernels: 5
 
   workspace_dir: workspace
   external_data_dir: datasets 
   base_conda_env_name: comind
+  submission_file_name: submission.parquet
 
 execution:
   inspect_interval: 1200
   timeout: 18000
-  max_cpu_cores: 8
+  max_cpu_cores: 24
   max_gpu_count: 1

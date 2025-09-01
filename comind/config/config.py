@@ -36,6 +36,7 @@ class Config(DataClassJsonMixin):
     agent_workspace_dir: Path = Path("workspace")
     agent_external_data_dir: Optional[Path] = None
     agent_base_conda_env_name: str = "comind"
+    agent_submission_file_name: str = "submission.csv"
 
     # Execution settings
     execution_inspect_interval: int = 1200

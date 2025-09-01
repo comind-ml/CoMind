@@ -72,6 +72,7 @@ class Agent:
         self.code_agents              = []
         self.datasets: dict[str, Dataset] = {}
         self.task_desc                = cfg.competition_task_desc
+        self.submission_name          = cfg.agent_submission_file_name
 
         (self.cfg.agent_workspace_dir / "submission").mkdir(parents=True, exist_ok=False)
         
@@ -96,8 +97,8 @@ class Agent:
         for report in self.reports: 
             if report.metric > best_metric and report.submission is not None:
                 best_metric = report.metric
-                shutil.copy(report.submission, self.cfg.agent_workspace_dir / "submission" / "submission.csv")
-        
+                shutil.copy(report.submission, self.cfg.agent_workspace_dir / "submission" / self.submission_name)
+
         self.metric_updater = MetricUpdater(cfg, best_metric, self)
 
     def save_agent_state(self):
@@ -310,7 +311,7 @@ A representative code segment for this pipeline. You **must include dataset read
 </code>
 
 <submission>
-The name of the submission file. It does not necessarily be submission.csv. Leave this field as None if the code does not produce a submission.
+The name of the submission file. It does not necessarily be {self.submission_name}. Leave this field as None if the code does not produce a submission.
 </submission>
 
 Here is the kernel content:
@@ -353,6 +354,8 @@ Your response must contain summary, suggestions and code sections.
         
         if submission_path and not submission_path.exists():
             submission_path = None
+        
+        if not submission_path:
             metric = WorstMetricValue()
 
         return Pipeline(
