@@ -4,18 +4,18 @@ competition:
   task_desc: null  # Path to the competition task description
 
 llm:
-  model: o4-mini
-  max_retries: 5
+  model: gpt-5-mini
+  max_retries: 20
   timeout: 600
 
 agent:
   num_code_agents: 4 # Number of code agents
-  num_iterations: 2
-  num_iterations_code_agents: 20
+  num_iterations: 8
+  num_iterations_code_agents: 30
   time_limit_code_agents: 18000
 
   max_referred_discussions: 10
-  max_referred_kernels: 0
+  max_referred_kernels: 4
 
   workspace_dir: workspace
   external_data_dir: datasets 

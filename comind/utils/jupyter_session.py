@@ -46,7 +46,7 @@ class JupyterNotebook:
 
         prompt = f"""
 You are tasked with converting a Jupyter notebook into clean, production-ready Python code. Your goal is to extract only the essential code that contributes to the final results. 
-You should only retain code from cells that were actually executed and required by later cells that produce final results. Remove any unnecessary code and eliminate deprecate code that was replaced by later versions and duplicate implementations where only the final version is used. You extraction should be on cell-level. You should only determine each cell should be retained and rearrange the order of them. Do not change the content of each cell. You should provide a self-contained full python code that can be run as a standalone .py file.
+You should only retain code from cells that were actually executed and required by later cells that produce final results. Remove any unnecessary code and eliminate deprecate code that was replaced by later versions and duplicate implementations where only the final version is used. You extraction should be on cell-level. You should only determine each cell should be retained and rearrange the order of them. Do not change the content of each cell. You should provide a self-contained full python code that can be run as a standalone .py file. Your final code should be contained in a single code tag.
 
 {cells_str}
 
@@ -60,7 +60,10 @@ Your summary of the code. Describe the pipeline and model structures.
 The assembled python code. Do not include any additional text or explanations. Do not wrap the code in a markdown code block.
 </code>
 """
-        result = query_llm(self.cfg.llm, [{"role": "system", "content": prompt}], required_fields=["code"])
+        def check_fn(response: dict):
+            return len(response["code"]) == 1
+        
+        result = query_llm(self.cfg.llm, [{"role": "system", "content": prompt}], required_fields=["code"], check_fn=check_fn)
         return result["code"][0]
 
 

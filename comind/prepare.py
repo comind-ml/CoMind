@@ -60,6 +60,9 @@ Describe the goal of this cell and the expected output. Mention any changes you 
 The content of this cell. Do not wrap the code in a markdown block. Your code will be appended to the notebook, which is stored at ./agent.ipynb. 
 </code>
 """
+        
+        if not isinstance(self.pipeline.metric, WorstMetricValue):
+            prompt += f"\nThe final evaluation metric of this script should be close to {self.pipeline.metric}. You should keep correcting the pipeline until you observed a reasonable final metric close to it."
         self.llm.add_message(role="system", content=prompt)
 
 
@@ -126,13 +129,16 @@ The content of this cell. Do not wrap the code in a markdown block. Your code wi
 Your responses should always contain <goal> (even if you are reporting the metric) and <code> tags. Respond in the following format:
 
 <goal>
-Describe the goal of this cell and the expected output. Mention any changes you made to the code and how to inspect the results. If all the issues are resolved and you have captured the final evaluation metric, report the metric here instead of the goal. Report decimal number if the metric is a float. Do not change the name of the tag even if you are reporting the metric. Do not report any metric before you have executed all cells in the original code.
+Describe the goal of this cell and the expected output. Mention any changes you made to the code and how to inspect the results. If all the issues are resolved and you have captured the final evaluation metric, report the metric here instead of the goal. Report decimal number if the metric is a percentage. For example, report 0.99 instead of 99.0 for 99%. Do not change the name of the tag even if you are reporting the metric. Do not report any metric before you have executed all cells in the original code and **observed reasonable metric**.
 </goal>
 
 <code>
-The content of the next cell. Do not wrap the code in a markdown block. Your code will be appended to the notebook. If all the issues are resolved, the final submission file is generated at ./{self.submission_name} and you have captured the final evaluation metric, leave this as None. e.g. <code>None</code>. Do not leave this as None before you have executed all cells in the original code.
+The content of the next cell. Do not wrap the code in a markdown block. Your code will be appended to the notebook. If all the issues are resolved, the final submission file is generated at ./{self.submission_name} and you have captured the final evaluation metric, leave this as None. e.g. <code>None</code>. Do not leave this as None before you have executed all cells in the original code or generated reasonable metric. 
 </code>
 """
+            
+            if not isinstance(self.pipeline.metric, WorstMetricValue):
+                feedback += f"\nRemember, you should keep correcting the code until the reported metric is around {self.pipeline.metric}. Do not report None in the code tag until you achieve this. You should strictly follow the final approach of the original script to generate the final, best submission. Mirror any behaviors, including training, ensemble, finetuning, etc. Keep updating even after you generate a result if the reported metric is far below than {self.pipeline.metric}."
 
             self.llm.add_message(role="user", content=feedback)
         
