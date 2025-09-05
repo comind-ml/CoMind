@@ -4,6 +4,7 @@ from comind.agent import MetricUpdater
 from comind.utils import get_logger, Conversation, generate
 from comind.utils.jupyter_session import JupyterSession, ExecutionResult
 from comind.utils.metric import WorstMetricValue, MetricValue
+from comind.evaluate import Evaluator
 
 class PrepareAgent:
     def __init__(
@@ -12,11 +13,13 @@ class PrepareAgent:
         pipeline: Pipeline, 
         is_lower_better: bool, 
         metric_updater: MetricUpdater,
+        evaluator: Evaluator | None,
         env_name: str
     ):
         self.cfg = cfg
         self.pipeline = pipeline
         self.metric_updater = metric_updater
+        self.evaluator = evaluator
         self.is_lower_better = is_lower_better
         self.submission_name = cfg.agent_submission_file_name
 
@@ -48,7 +51,12 @@ The script may generate submission file multiple times. You should keep correct 
 
 You should correct the code until the loss curve is stable and you have captured the **final** evaluation metric.
 
-You MUST print out the final evaluation metric before generating the last submission file. If the code does not print out the metric, **it is your responsibility to compute the metric and print it out**.
+You MUST print out the final evaluation metric before generating the last submission file. If the code does not print out the metric, **it is your responsibility to compute the metric and print it out**."""
+        
+        if self.evaluator:
+            prompt += " To evaluate your submission locally. You should also generate a submission file on the validation set. To achieve this, you should slightly modify the code to generate a submission file on the validation set. All the validation data are typically structured similarly to the test data. An external grader will be used to evaluate your validation submission. That is to say, you should generate TWO submission files: one is for the validation set and the other is for the test set. Generate two submission files in the same code cell."
+
+        prompt += """
 
 Now, please propose THE FIRST CELL (not your full code!) using the following format:
 
@@ -59,6 +67,20 @@ Describe the goal of this cell and the expected output. Mention any changes you 
 <code>
 The content of this cell. Do not wrap the code in a markdown block. Your code will be appended to the notebook, which is stored at ./agent.ipynb. 
 </code>
+
+You should propose exactly ONE code cell per iteration and I'll tell you the output of your code cell. 
+"""
+        if self.evaluator:
+            prompt += """
+<validation_submission>
+The name of the submission file for the validation set. e.g. validate_submission.csv. If your current code cell does not produce two submission files, leave this as None. 
+</validation_submission>
+
+<submission>
+The name of the submission file for the test set. e.g. submission.csv. This submission should be ready for Kaggle submission. If your current code cell does not produce two submission files, leave this as None.
+</submission>
+
+The validation_submission tag and the submission tag should must be both empty or both non-empty.
 """
         
         if not isinstance(self.pipeline.metric, WorstMetricValue):
@@ -100,21 +122,34 @@ The content of this cell. Do not wrap the code in a markdown block. Your code wi
 
         for iteration in range(self.cfg.agent_num_iterations_code_agents):
             self.logger.info(f"Iteration {iteration}")
-            def check_fn(response: dict) -> bool:
-                if len(response["code"][0]) < 10:
-                    try:
-                        _ = float(response["goal"][0])
+            
+            # Get LLM response with appropriate fields based on evaluator
+            if self.evaluator:
+                def check_fn(response: dict) -> bool:
+                    if len(response["code"][0]) < 10:
                         return "none" in response["code"][0].lower()
-                    except:
-                        return False
-                return True
-
-            response = self.llm.query(required_fields=["goal", "code"], check_fn=check_fn)
+                    # Check that validation_submission and submission are both empty or both non-empty
+                    a = "none" in response["validation_submission"][0].lower()
+                    b = "none" in response["submission"][0].lower()
+                    return a == b
+                response = self.llm.query(required_fields=["goal", "code", "validation_submission", "submission"], check_fn=check_fn)
+            else:
+                def check_fn(response: dict) -> bool:
+                    if len(response["code"][0]) < 10:
+                        try:
+                            _ = float(response["goal"][0])
+                            return "none" in response["code"][0].lower()
+                        except:
+                            return False
+                    return True
+                response = self.llm.query(required_fields=["goal", "code"], check_fn=check_fn)
+            
             goal, code = response["goal"][0], response["code"][0]
             
             if len(code) < 10:
                 success = True
-                metric = MetricValue(float(goal), maximize = not self.is_lower_better)
+                if not self.evaluator:
+                    metric = MetricValue(float(goal), maximize = not self.is_lower_better)
                 break
 
             self.logger.info(code)
@@ -125,13 +160,65 @@ The content of this cell. Do not wrap the code in a markdown block. Your code wi
             self.logger.info(f"execution_time: {result.execution_time}")
 
             feedback = self._get_feedback_prompt(result)
-            feedback += f"""
-Your responses should always contain <goal> (even if you are reporting the metric) and <code> tags. Respond in the following format:
+            
+            # Handle evaluation based on evaluator availability
+            if self.evaluator:
+                if result.success and "none" not in response["submission"][0].lower():
+                    validate_submission = self.cfg.agent_workspace_dir / response["validation_submission"][0]
+                    submission = self.cfg.agent_workspace_dir / response["submission"][0]
+                
+                    if validate_submission.exists():
+                        eval_result = self.evaluator.evaluate(validate_submission)
+                        if eval_result.success:
+                            current_metric = MetricValue(eval_result.score, maximize=not self.is_lower_better)
+                            feedback += f"\nThe evaluation metric on the validation set is {current_metric}.\n"
+                            if not submission.exists():
+                                feedback += f"\nYour code failed to generate a submission file on the test set.\n"
+                            elif current_metric > metric:
+                                metric = current_metric
+                        else:
+                            feedback += f"\nYour code failed to generate a valid submission file on the validation set. Error message: {eval_result.message}\n"
+                    else:
+                        feedback += f"\nYour code failed to generate a submission file on the validation set.\n"
+            else:
+                # Handle non-evaluator case - check for submission and process metric
+                submission_path = self.cfg.agent_workspace_dir / self.submission_name
+                if result.success and submission_path.exists() and "metric" in response:
+                    try:
+                        if "none" not in response["metric"][0].lower():
+                            current_metric = MetricValue(float(response["metric"][0]), maximize=not self.is_lower_better)
+                            if current_metric > metric:
+                                metric = current_metric
+                    except (ValueError, KeyError):
+                        pass
+            
+            feedback += """
+Now, respond in the following format:
+"""
+            if self.evaluator:
+                feedback += """
+<validation_submission>
+The name of the submission file for the validation set. e.g. validate_submission.csv. If your current code cell does not produce a submission file on the validation set, leave this as None.
+</validation_submission>
 
+<submission>
+The name of the submission file for the test set. e.g. submission.csv. This submission should be ready for Kaggle submission. If your current code cell does not produce a submission file on the test set, leave this as None.
+</submission>
+
+The validation_submission tag and the submission tag should must be both empty or both non-empty.
+
+<goal>
+Describe the goal of this cell and the expected output.
+</goal>
+
+"""
+            else:
+                feedback += """
 <goal>
 Describe the goal of this cell and the expected output. Mention any changes you made to the code and how to inspect the results. If all the issues are resolved and you have captured the final evaluation metric, report the metric here instead of the goal. Report decimal number if the metric is a percentage. For example, report 0.99 instead of 99.0 for 99%. Do not change the name of the tag even if you are reporting the metric. Do not report any metric before you have executed all cells in the original code and **observed reasonable metric**.
 </goal>
-
+"""
+            feedback += f"""
 <code>
 The content of the next cell. Do not wrap the code in a markdown block. Your code will be appended to the notebook. If all the issues are resolved, the final submission file is generated at ./{self.submission_name} and you have captured the final evaluation metric, leave this as None. e.g. <code>None</code>. Do not leave this as None before you have executed all cells in the original code or generated reasonable metric. 
 </code>

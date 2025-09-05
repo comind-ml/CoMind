@@ -37,6 +37,7 @@ class Config(DataClassJsonMixin):
     agent_external_data_dir: Optional[Path] = None
     agent_base_conda_env_name: str = "comind"
     agent_submission_file_name: str = "submission.csv"
+    agent_separate_validation_submission: bool = True
 
     # Execution settings
     execution_inspect_interval: int = 1200

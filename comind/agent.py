@@ -5,7 +5,6 @@ import queue
 import time
 import threading
 import subprocess
-import sys
 from copy import deepcopy
 from rich.status import Status
 from datetime import datetime
@@ -13,6 +12,7 @@ from comind.config import Config
 from pathlib import Path
 from comind.community import Pipeline, Dataset, Draft
 from comind.utils import query_llm, MetricValue, WorstMetricValue, extract_fields, copytree, extract_archives, get_logger
+from comind.evaluate import Evaluator
 from comind.kaggle import *
 
 class MetricUpdater:
@@ -100,6 +100,12 @@ class Agent:
                 shutil.copy(report.submission, self.cfg.agent_workspace_dir / "submission" / self.submission_name)
 
         self.metric_updater = MetricUpdater(cfg, best_metric, self)
+        self.evaluator = None 
+        if self.cfg.agent_separate_validation_submission:
+            evaluator_cfg = deepcopy(self.cfg)
+            evaluator_cfg.agent_workspace_dir = self.cfg.agent_external_data_dir / self.cfg.competition_id
+            self.evaluator = Evaluator(evaluator_cfg, self.is_lower_better)
+            self.cfg.competition_input_dir = self.evaluator.public_dir
 
     def save_agent_state(self):
         """Save current agent state for monitoring."""
@@ -653,6 +659,7 @@ Make sure all your pipelines are well-explained. If similar parts are used in mu
             draft=draft,
             is_lower_better=self.is_lower_better,
             metric_updater=self.metric_updater,
+            evaluator=self.evaluator,
             env_name=self._get_env_name(draft.id)
         )
         
@@ -706,6 +713,7 @@ Make sure all your pipelines are well-explained. If similar parts are used in mu
             pipeline=report,
             is_lower_better=self.is_lower_better,
             metric_updater=self.metric_updater,
+            evaluator=self.evaluator,
             env_name=self._get_env_name(report.id)
         )
         return prepare.run()
@@ -768,6 +776,10 @@ Make sure all your pipelines are well-explained. If similar parts are used in mu
             self.logger.info("🎛️  Agent state saved for monitoring!")
             self.logger.info(f"📊  To monitor progress, run in another terminal:")
             self.logger.info(f"    python monitor_loader.py {state_file}")
+        
+        if self.evaluator:
+            with Status("Setting up evaluator..."):
+                self.evaluator.setup()
 
         for iteration in range(self.cfg.agent_num_iterations):
             self.logger.info("-" * 10 + f" Iteration {iteration} " + "-" * 10)

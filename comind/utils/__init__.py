@@ -1,8 +1,3 @@
-from .metric import MetricValue, WorstMetricValue
-from .llm import Conversation, query_llm, query_llm_raw, extract_fields
-from .data_preview import generate
-from .execute import Executor, ExecutionResult
-from .logger import get_logger
 from pathlib import Path
 import shutil
 import zipfile
@@ -81,4 +76,78 @@ def extract_archives(path: Path):
 
         zip_f.unlink()
 
-__all__ = ["MetricValue", "WorstMetricValue", "Conversation", "query_llm", "query_llm_raw", "extract_fields", "copytree", "generate", "Executor", "ExecutionResult", "extract_archives", "get_logger"]
+def process_backspace_chars(text: str) -> str:
+    """Process backspace characters to show final state of progress bars.
+    
+    Args:
+        text: Raw text with potential backspace characters
+        
+    Returns:
+        Processed text with backspace characters handled
+    """
+    if not text:
+        return text
+    
+    # Remove ANSI escape sequences (used by tqdm and other progress bars)
+    import re
+    ansi_escape = re.compile(r'\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])')
+    text = ansi_escape.sub('', text)
+    
+    # Split text into lines
+    lines = text.split('\n')
+    processed_lines = []
+    
+    for line in lines:
+        # Handle carriage return within line
+        if '\r' in line:
+            parts = line.split('\r')
+            # Keep only the last part (final state)
+            line = parts[-1]
+        
+        # Handle backspace characters
+        if '\b' in line:
+            result = []
+            for char in line:
+                if char == '\b':
+                    if result:
+                        result.pop()
+                else:
+                    result.append(char)
+            line = ''.join(result)
+        
+        processed_lines.append(line)
+    
+    # Filter out duplicate tqdm progress lines
+    # Keep only the last occurrence of each type of progress line
+    final_lines = []
+    seen_progress_patterns = {}
+    
+    for line in reversed(processed_lines):
+        line_stripped = line.strip()
+        
+        # Check if this is a tqdm progress line
+        if ('|' in line_stripped and '%' in line_stripped and 
+            ('it/s' in line_stripped or 's/it' in line_stripped)):
+            # Extract the description part (before the percentage)
+            desc_match = re.match(r'^([^:]*?):\s*\d+%', line_stripped)
+            if desc_match:
+                desc = desc_match.group(1)
+                if desc not in seen_progress_patterns:
+                    seen_progress_patterns[desc] = True
+                    final_lines.append(line)
+            else:
+                # Generic progress pattern
+                if 'generic_progress' not in seen_progress_patterns:
+                    seen_progress_patterns['generic_progress'] = True
+                    final_lines.append(line)
+        elif line_stripped:  # Non-empty non-progress line
+            final_lines.append(line)
+    
+    return '\n'.join(reversed(final_lines))
+
+from .metric import MetricValue, WorstMetricValue
+from .llm import Conversation, query_llm, query_llm_raw, extract_fields
+from .data_preview import generate
+from .logger import get_logger
+
+__all__ = ["MetricValue", "WorstMetricValue", "Conversation", "query_llm", "query_llm_raw", "extract_fields", "copytree", "generate", "extract_archives", "get_logger", "process_backspace_chars"]

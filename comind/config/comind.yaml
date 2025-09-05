@@ -20,7 +20,8 @@ agent:
   external_data_dir: datasets 
   base_conda_env_name: comind
   submission_file_name: submission.csv
-
+  separate_validation_submission: True
+  
 execution:
   inspect_interval: 1200
   timeout: 18000

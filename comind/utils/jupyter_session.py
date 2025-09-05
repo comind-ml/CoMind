@@ -12,7 +12,8 @@ from jupyter_client import KernelManager, BlockingKernelClient
 from jupyter_client.kernelspec import KernelSpecManager
 from comind.community import Draft
 from comind.config import Config, LLMConfig
-from comind.utils.llm import query_llm
+from comind.utils import query_llm, process_backspace_chars
+
 
 @dataclass
 class ExecutionResult:
@@ -362,7 +363,7 @@ Your rationale for the action. Describe the current progress, your estimated rem
             if current_time - last_decision_time > self.cfg.execution_inspect_interval:
                 last_decision_time = current_time
                 should_continue, explanation = self._ask_llm_decision(
-                    code, goal, self._process_backspace_chars(output), current_time - start_time
+                    code, goal, process_backspace_chars(output), current_time - start_time
                 )
                 if not should_continue:
                     llm_terminated = True
@@ -392,13 +393,13 @@ Your rationale for the action. Describe the current progress, your estimated rem
                 for line in content.get("traceback", []):
                     error += line + "\n"
 
-            self._write_to_log_file(self._process_backspace_chars(output + "\n" + error))
+            self._write_to_log_file(process_backspace_chars(output + "\n" + error))
 
         if timeout | llm_terminated:
             success = False
 
         execution_time = time() - start_time
-        output, error = self._process_backspace_chars(output), self._process_backspace_chars(error)
+        output, error = process_backspace_chars(output), process_backspace_chars(error)
         return ExecutionResult(
             success=success,
             llm_terminated=llm_terminated,
@@ -407,75 +408,6 @@ Your rationale for the action. Describe the current progress, your estimated rem
             error=error,
             execution_time=execution_time
         )
-
-    def _process_backspace_chars(self, text: str) -> str:
-        """Process backspace characters to show final state of progress bars.
-        
-        Args:
-            text: Raw text with potential backspace characters
-            
-        Returns:
-            Processed text with backspace characters handled
-        """
-        if not text:
-            return text
-        
-        # Remove ANSI escape sequences (used by tqdm and other progress bars)
-        import re
-        ansi_escape = re.compile(r'\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])')
-        text = ansi_escape.sub('', text)
-        
-        # Split text into lines
-        lines = text.split('\n')
-        processed_lines = []
-        
-        for line in lines:
-            # Handle carriage return within line
-            if '\r' in line:
-                parts = line.split('\r')
-                # Keep only the last part (final state)
-                line = parts[-1]
-            
-            # Handle backspace characters
-            if '\b' in line:
-                result = []
-                for char in line:
-                    if char == '\b':
-                        if result:
-                            result.pop()
-                    else:
-                        result.append(char)
-                line = ''.join(result)
-            
-            processed_lines.append(line)
-        
-        # Filter out duplicate tqdm progress lines
-        # Keep only the last occurrence of each type of progress line
-        final_lines = []
-        seen_progress_patterns = {}
-        
-        for line in reversed(processed_lines):
-            line_stripped = line.strip()
-            
-            # Check if this is a tqdm progress line
-            if ('|' in line_stripped and '%' in line_stripped and 
-                ('it/s' in line_stripped or 's/it' in line_stripped)):
-                # Extract the description part (before the percentage)
-                desc_match = re.match(r'^([^:]*?):\s*\d+%', line_stripped)
-                if desc_match:
-                    desc = desc_match.group(1)
-                    if desc not in seen_progress_patterns:
-                        seen_progress_patterns[desc] = True
-                        final_lines.append(line)
-                else:
-                    # Generic progress pattern
-                    if 'generic_progress' not in seen_progress_patterns:
-                        seen_progress_patterns['generic_progress'] = True
-                        final_lines.append(line)
-            elif line_stripped:  # Non-empty non-progress line
-                final_lines.append(line)
-        
-        return '\n'.join(reversed(final_lines))
 
     def append_cell(self, code: str, goal: str) -> ExecutionResult:
         msg_id = self.kc.execute(code, allow_stdin=False, store_history=True, stop_on_error=True)
