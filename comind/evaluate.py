@@ -40,7 +40,7 @@ class Evaluator:
         return get_rank(self.leaderboard, score)
     
     def evaluate(self, submission: Path) -> EvaluationResult:
-        result = execute_file(self.workspace, "evaluate.py", ["--public_dir", self.public_dir.absolute(), "--private_dir", self.private_dir.absolute(), "--pred", submission.absolute()])
+        result = execute_file(self.workspace, self.eval_script_path, ["--public_dir", self.public_dir.absolute(), "--private_dir", self.private_dir.absolute(), "--pred", submission.absolute()])
         assert result.success, result.output + result.error
         with open(self.private_dir / "eval_report.json", "r") as f:
             eval_report = json.load(f)
@@ -127,6 +127,8 @@ It will be executed by command line as follows:
 python evaluate.py --public_dir ./public --private_dir ./private --pred <path to the validation submission file>
 ```
 
+We will pass the path to the sample validation submission file as the argument to your evaluate.py script. It typically produces low scores.
+
 The script should generate in the following json format at ./private/eval_report.json:
 
 {{
@@ -209,7 +211,7 @@ The full content of the current file. Do not wrap the code in a markdown block. 
 Now, respond in the following format:
 
 <current_file>
-This should be either split_dataset.py or evaluate.py. Leave this as None if both are generated and functioned. This indicates the current file you are editing. You should keep editing the current file until it is fully functional.
+This should be either split_dataset.py or evaluate.py. **Leave this as None if both are generated and functioned**. This indicates the current file you are editing. You should keep editing the current file until it is fully functional.
 </current_file>
 
 <explanation>
