@@ -491,8 +491,6 @@ An extremely detailed description of the weaknesses of the pipeline you found du
             # Get LLM response
             if self.evaluator:
                 def check_fn(response: dict) -> bool:
-                    if len(response["suggestions"]) != 1:
-                        return False 
                     a = "none" in response["validation_submission"][0].lower()
                     b = "none" in response["submission"][0].lower()
                     return a == b
