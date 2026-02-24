@@ -171,7 +171,7 @@ The validation_submission tag and the submission tag should must be both empty o
                         eval_result = self.evaluator.evaluate(validate_submission)
                         if eval_result.success:
                             current_metric = MetricValue(eval_result.score, maximize=not self.is_lower_better)
-                            feedback += f"\nThe evaluation metric on the validation set is {current_metric}.\n"
+                            feedback += f"\nThe evaluation metric on the validation set is {current_metric}. You should keep correcting the code until you observed a reasonable final metric close to {self.pipeline.metric}.\n"
                             if not submission.exists():
                                 feedback += f"\nYour code failed to generate a submission file on the test set.\n"
                             elif current_metric > metric:

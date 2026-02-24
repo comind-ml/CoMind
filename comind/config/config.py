@@ -38,6 +38,7 @@ class Config(DataClassJsonMixin):
     agent_base_conda_env_name: str = "comind"
     agent_submission_file_name: str = "submission.csv"
     agent_separate_validation_submission: bool = True
+    agent_reproduce: bool = True
 
     # Execution settings
     execution_inspect_interval: int = 1200

@@ -4,7 +4,7 @@ import shutil
 import queue
 import time
 import threading
-import subprocess
+import hashlib
 from copy import deepcopy
 from rich.status import Status
 from datetime import datetime
@@ -40,17 +40,11 @@ class MetricUpdater:
             old_best = self.best_metric
             self.best_metric = metric 
             time_elapsed = time.time() - self.start_time
+        
+            file_name = f"{time_elapsed}_{self.cfg.agent_submission_file_name}"
+            shutil.copy(submission, self.cfg.agent_workspace_dir / "submission" / file_name)
 
-            shutil.copy(submission, self.cfg.agent_workspace_dir / "submission" / f"submission_{time_elapsed}.csv")
-
-            self.logger.info(f"🏆 Global best metric updated: {old_best} -> {self.best_metric}")
-
-            if self.agent and hasattr(self.agent, 'save_agent_state'):
-                try:
-                    self.agent.save_agent_state()
-                    self.logger.info(f"🏆 Agent state saved with new global best: {self.best_metric}")
-                except Exception as e:
-                    self.logger.warning(f"Failed to save agent state after metric update: {e}")
+            self.logger.info(f"Global best metric updated: {old_best} -> {self.best_metric}")
 
     def run(self):
         self._stop = False
@@ -79,10 +73,6 @@ class Agent:
         self.logger = get_logger("Agent", cfg.agent_workspace_dir / "agent.log")
         self.llm_logger = get_logger("LLM (Agent)", cfg.agent_workspace_dir / "llm.log", file_only=True)
         
-        # Setup conda workspace configuration
-        self.conda_envs_dir           = self._setup_conda_workspace(self.cfg.agent_workspace_dir)
-        self.cfg.conda_envs_dir       = self.conda_envs_dir
-
         self.is_lower_better          = self._query_is_lower_better()
 
         with Status("Fetching external data..."):
@@ -107,77 +97,6 @@ class Agent:
             self.evaluator = Evaluator(evaluator_cfg, self.is_lower_better)
             self.cfg.competition_input_dir = self.evaluator.public_dir
 
-    def save_agent_state(self):
-        """Save current agent state for monitoring."""
-        state_file = self.cfg.agent_workspace_dir / "agent_state.pkl"
-        state_file.parent.mkdir(parents=True, exist_ok=True)
-        
-        global_best_metric = str(self.metric_updater.best_metric) if hasattr(self.metric_updater, 'best_metric') else "N/A"
-        
-        monitor_state = {
-            'ideas': self.ideas,
-            'reports': self.reports,
-            'datasets': self.datasets,
-            'code_agents': self.code_agents,
-            'cfg': self.cfg,
-            'global_best_metric': global_best_metric
-        }
-        
-        with open(state_file, 'wb') as f:
-            pickle.dump(monitor_state, f)
-        
-        return state_file
-
-    def _setup_conda_workspace(self, workspace_dir: Path) -> Path:
-        """Setup conda directories for workspace-local environments."""
-        # Create conda environments directory
-        conda_envs_dir = workspace_dir / "conda_envs"
-        conda_envs_dir.mkdir(parents=True, exist_ok=True)
-        
-        self.logger.info(f"Setup conda workspace directory at {conda_envs_dir}")
-        return conda_envs_dir
-    
-    def _clone_conda_environment(self, source_env_name: str, target_env_name: str):
-        """Clone a conda environment to workspace-local location using explicit prefix.
-        If target already exists, remove it first.
-        """
-        try:
-            # Resolve source and target
-            if source_env_name != self.cfg.agent_base_conda_env_name:
-                source_env_name = self.conda_envs_dir / source_env_name
-            target_env_path = self.conda_envs_dir / target_env_name
-
-            # If target exists, remove it first
-            if target_env_path.exists():
-                self.logger.info(f"Target env {target_env_path} already exists. Removing...")
-                try:
-                    subprocess.run(
-                        ['conda', 'env', 'remove', '--prefix', str(target_env_path), '-y'],
-                        check=True, capture_output=True, text=True
-                    )
-                    self.logger.info(f"Removed existing env at {target_env_path}")
-                except subprocess.CalledProcessError as e:
-                    self.logger.error(f"Failed to remove existing env: {e}")
-                    self.logger.error(f"stdout: {e.stdout}")
-                    self.logger.error(f"stderr: {e.stderr}")
-                    raise
-
-            # Clone the environment
-            self.logger.info(f"Cloning conda environment {source_env_name} -> {target_env_path}")
-            subprocess.run(
-                ['conda', 'create', '--prefix', str(target_env_path), '--clone', str(source_env_name), '-y'],
-                check=True, capture_output=True, text=True
-            )
-
-            self.logger.info(f"Successfully cloned conda environment to {target_env_path}")
-            return target_env_path
-
-        except subprocess.CalledProcessError as e:
-            self.logger.error(f"Failed to clone conda environment: {e}")
-            self.logger.error(f"stdout: {e.stdout}")
-            self.logger.error(f"stderr: {e.stderr}")
-            raise
-            
     def _query_is_lower_better(self) -> bool:
         prompt = f"""
 You are a Kaggle competitor tasked with achieving the highest possible score on the competition. 
@@ -208,44 +127,47 @@ Your rationale for your decision in 3-4 sentences.
         for kernel in kernels:
             self.logger.info(f"Processing kernel {kernel}...")
             kernel_metadata = get_kernel_metadata(kernel)
-            for ref_kernel in kernel_metadata["kernel_sources"]:
-                if ref_kernel:
-                    self.logger.info(f"Downloading referenced kernel {ref_kernel}...")
-                    path = download_kernel_output(self.cfg, ref_kernel)
-                    self.datasets[ref_kernel] = Dataset(
-                        id=ref_kernel,
-                        name=ref_kernel,
-                        description=f"Referenced kernel {ref_kernel}",
-                        base_path=path
-                    )
-            for ref_model in kernel_metadata["model_sources"]:
-                if ref_model:
-                    self.logger.info(f"Downloading referenced model {ref_model}...")
-                    path = download_model(self.cfg, ref_model)
-                    metadata = get_model_metadata(self.cfg, ref_model)
-                    self.datasets[ref_model] = Dataset(
-                        id=ref_model,
-                        name=metadata["title"],
-                        description="Description not available" if "description" not in metadata else metadata["description"],
-                        base_path=path
-                    )
-            for ref_dataset in kernel_metadata["dataset_sources"]:
-                if ref_dataset:
-                    self.logger.info(f"Downloading referenced dataset {ref_dataset}...")
-                    path = download_dataset(self.cfg, ref_dataset)
-                    metadata = get_dataset_metadata(self.cfg, ref_dataset)
-                    self.datasets[ref_dataset] = Dataset(
-                        id=ref_dataset,
-                        name=metadata["title"],
-                        description=metadata["description"],
-                        base_path=path
-                    )
+            try:
+                for ref_kernel in kernel_metadata["kernel_sources"]:
+                    if ref_kernel:
+                        self.logger.info(f"Downloading referenced kernel {ref_kernel}...")
+                        path = download_kernel_output(self.cfg, ref_kernel)
+                        self.datasets[ref_kernel] = Dataset(
+                            id=ref_kernel,
+                            name=ref_kernel,
+                            description=f"Referenced kernel {ref_kernel}",
+                            base_path=path
+                        )
+                for ref_model in kernel_metadata["model_sources"]:
+                    if ref_model:
+                        self.logger.info(f"Downloading referenced model {ref_model}...")
+                        path = download_model(self.cfg, ref_model)
+                        metadata = get_model_metadata(self.cfg, ref_model)
+                        self.datasets[ref_model] = Dataset(
+                            id=ref_model,
+                            name=metadata["title"],
+                            description="Description not available" if "description" not in metadata else metadata["description"],
+                            base_path=path
+                        )
+                for ref_dataset in kernel_metadata["dataset_sources"]:
+                    if ref_dataset:
+                        self.logger.info(f"Downloading referenced dataset {ref_dataset}...")
+                        path = download_dataset(self.cfg, ref_dataset)
+                        metadata = get_dataset_metadata(self.cfg, ref_dataset)
+                        self.datasets[ref_dataset] = Dataset(
+                            id=ref_dataset,
+                            name=metadata["title"],
+                            description=metadata["description"],
+                            base_path=path
+                        )
+            except Exception as e:
+                self.logger.error(f"Failed to download referenced resources for kernel {kernel_metadata['id']}: {e}")
         self.kernel_notebooks = kernels
 
     def _read_jupyter_notebook(self, file_path: Path) -> str:
         """ Read the code and markdown cells from a Jupyter notebook. """
 
-        assert file_path.suffix == ".ipynb", "File must be a Jupyter notebook."
+        assert file_path.suffix in [".ipynb", ".irnb"], "File must be a Jupyter notebook."
 
         with open(file_path, "r", encoding='utf-8') as f:
             notebook = json.load(f)
@@ -344,7 +266,7 @@ Your response must contain summary, suggestions and code sections.
 
         ref_resources = metadata["dataset_sources"] + metadata["model_sources"] + metadata["kernel_sources"]
         for ref_resource in ref_resources:
-            if ref_resource:
+            if ref_resource and ref_resource in self.datasets:
                 datasets.append(self.datasets[ref_resource])
             else:
                 referenced_private_data = True
@@ -478,8 +400,11 @@ Make sure all your ideas are well-explained.
     def _get_ideas_str(self) -> str:
         return "\n".join(f"- {idea}" for idea in self.ideas)
     
-    def _get_reports_str(self) -> str:
-        return "\n".join(report.to_str(full_code=False) for report in self.reports)
+    def _get_reports_str(self, max_reports: int = 30) -> str:
+        reports = self.reports
+        if max_reports is not None and len(reports) > max_reports:
+            reports = sorted(reports, key=lambda r: r.metric, reverse=True)[:max_reports]
+        return "\n".join(report.to_str(full_code=False) for report in reports)
 
     def _generate_pipelines(self) -> list[Draft]:
         prompt = f"""
@@ -500,17 +425,19 @@ We have collected a list of ideas and reports to help you get the best score. Ea
 
 <reports>\n{self._get_reports_str()}\n</reports>
 
-Your task is to generate a list of pipelines that are likely to achieve the highest possible score. You should generate exactly {self.cfg.agent_num_code_agents} pipelines. **Use Pytorch instead of Tensorflow**. Each pipeline should not overlap with others and as diverse as possible. Your proposed pipelines should include **one pipeline that extends the best method generated so far**, if any provided. Ensure that each pipeline can be trained within 2 hours on a single A6000 with 48GB memory. To gain best performance, you should at least include the best report with the highest score generated so far (if provided) and reference it for ensembling before producing the final submission.
+Your task is to generate a list of pipelines that are likely to achieve the highest possible score. You should generate exactly {self.cfg.agent_num_code_agents} pipelines. **Use Pytorch instead of Tensorflow**. Each pipeline should not overlap with others and as diverse as possible. Your proposed pipelines should include **one pipeline that extends the best method generated so far**, if any provided, and **one novel pipeline that is not in the reports list**. You should explore all ideas we provided and synthesize them into your pipelines. Ensure that each pipeline can be trained within 2 hours on a single A6000 with 48GB memory. Utilize GPU resources as much as possible. You are allowed to load huggingface models/datasets/checkpoints.
 
 These pipelines will be implemented and executed in separate environments. That is, if you generate 4 pipelines, the last pipeline should not be an ensemble of the first 3 pipelines.
+
+If any external supplement training datasets are referenced by public kernels. Your pipelines **should include them as well** and use them to extend the official training dataset. Your pipelines should be as diverse as possible. You are allowed to load previous checkpoints in referenced codebase and datasets.
 
 Respond in the following format:
 
 <pipeline>
-<title>The title of the pipeline. This should only contain letters, numbers, and spaces. Do not include any other characters. The title should contain 30 characters at most.</title>
+<title>The title of the pipeline. This should only contain letters, numbers, and spaces. Do not include any other characters. The title should contain 30 characters at most. Do not duplicate the title of any existing pipeline.</title>
 <description>An extremely detailed description of the pipeline. Include model architecture, training strategies, hyperparameters, evaluation metrics and input/output details. Read the **submission format** requirements in the task description carefully. The submission format requirement is possible to be different from the training dataset. **THIS IS EXTREMELY IMPORTANT**. Mention in the pipeline descriptions and be sure to include the code that handles the input and output. If any datasets are referenced, explain the structure of each dataset and how to read them. If kernels are referenced, you must describe how to load their checkpoints, whether the submissions files exist, and their evaluation metrics if available. Mention how to compute the evaluation metric.</description>
 <datasets>a list of dataset ids referenced in this pipeline, separated by comma. e.g. alice/dataset1,bob/dataset2,etc. You can also include kernel ids for ensembling or loading checkpoints. Do not contain any spaces. If no datasets are referenced, leave this field empty. Do not include dataset {self.cfg.competition_id}</datasets>
-<codebase>The codebase of the pipeline. The later implementation agent will use this codebase as a starting point. This field should either be a string exactly matching the id (not the title!) of a report in the reports section. Do NOT choose any reports that reference private data as the codebase.</codebase>
+<codebase>The codebase of the pipeline. The later implementation agent will use this codebase as a starting point. This field should either be a string exactly matching the id (not the title!) of a report in the reports section. Do NOT choose any reports that reference private data as the codebase. If no codebase is used, leave this field as None.</codebase>
 <code>
 Python code segment for this pipeline. Make sure to include any important parts, especially those that handle input and output.
 </code>
@@ -584,7 +511,6 @@ Make sure all your pipelines are well-explained. If similar parts are used in mu
         return drafts
     
     def _get_env_name(self, id: str) -> str:
-        import hashlib
         return hashlib.md5(id.encode()).hexdigest()[:8]
     
     def _setup_coder_workspace(self, draft: Draft, base_dir: Path):
@@ -609,18 +535,10 @@ Make sure all your pipelines are well-explained. If similar parts are used in mu
             (base_dir / "input" / dataset.id).mkdir(parents=True, exist_ok=False)
             copytree(dataset.base_path, base_dir / "input" / dataset.id, use_symlinks=True)
         
-        source_env_name = self.cfg.agent_base_conda_env_name
         if draft.codebase:
             codebase_report = self._get_report_from_id(draft.codebase)
-            source_env_name = self._get_env_name(codebase_report.id)
             assert codebase_report is not None, f"Codebase {draft.codebase} not found in reports."
             copytree(codebase_report.output_dir, base_dir / "working", use_symlinks=False)
-        
-        # Use shorter name to avoid path length issues
-        target_env_name = self._get_env_name(draft.id)
-        
-        # Clone the environment
-        self._clone_conda_environment(source_env_name, target_env_name)
     
     def _setup_reproduce_workspace(self, report: Pipeline, base_dir: Path):
         self.logger.info(f"Setting up reproduce workspace for {report.id}...")
@@ -637,19 +555,6 @@ Make sure all your pipelines are well-explained. If similar parts are used in mu
         
         copytree(report.output_dir, base_dir / "working", use_symlinks=False)
         
-        # For reproduce workspace, always use the base conda environment as source
-        # since we're reproducing from scratch
-        source_env_name = self.cfg.agent_base_conda_env_name
-        target_env_name = self._get_env_name(report.id)
-        
-        # Check if target environment already exists, if so, we can skip cloning
-        target_env_path = self.conda_envs_dir / target_env_name
-        if target_env_path.exists():
-            self.logger.info(f"Target environment {target_env_path} already exists, skipping clone")
-        else:
-            # Clone the environment
-            self._clone_conda_environment(source_env_name, target_env_name)
-
     def _start_coder(self, draft: Draft) -> Pipeline:
         coder_cfg = deepcopy(self.cfg)
         self._setup_coder_workspace(draft, coder_cfg.agent_workspace_dir / draft.id)
@@ -769,14 +674,7 @@ Make sure all your pipelines are well-explained. If similar parts are used in mu
             new_pipelines.append(new_pipeline)
         return new_pipelines
 
-    def run(self, start_monitor=False):
-        # Save initial state and provide monitor instructions
-        if start_monitor:
-            state_file = self.save_agent_state()
-            self.logger.info("🎛️  Agent state saved for monitoring!")
-            self.logger.info(f"📊  To monitor progress, run in another terminal:")
-            self.logger.info(f"    python monitor_loader.py {state_file}")
-        
+    def run(self):
         if self.evaluator:
             with Status("Setting up evaluator..."):
                 self.evaluator.setup()
@@ -785,20 +683,17 @@ Make sure all your pipelines are well-explained. If similar parts are used in mu
             self.logger.info("-" * 10 + f" Iteration {iteration} " + "-" * 10)
             with Status("Brainstorming..."):
                 self._brainstorm()
-            if start_monitor:
-                self.save_agent_state()
 
             with Status("Rephrasing..."):
                 self._rephrase()
-            if start_monitor:
-                self.save_agent_state()
 
             with Status("Generating pipelines..."):
                 pipelines = self._generate_pipelines()
 
-            with Status("Reproducing codebases..."):
-                self._reproduce_reports(pipelines)
-            pipelines = self._refetch_codebases(pipelines)
+            if self.cfg.agent_reproduce:
+                with Status("Reproducing codebases..."):
+                    self._reproduce_reports(pipelines)
+                pipelines = self._refetch_codebases(pipelines)
 
             results: list[Pipeline] = []
             def run_coders_and_store_results():
@@ -822,5 +717,3 @@ Make sure all your pipelines are well-explained. If similar parts are used in mu
                         base_path=report.output_dir
                     )
             
-            if start_monitor:
-                self.save_agent_state()

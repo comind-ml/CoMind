@@ -74,7 +74,6 @@ class JupyterSession:
         self.cells = JupyterNotebook(cfg=cfg, cells=[])
         self.env_name = env_name
         
-        # Select optimal GPU and CPU resources
         self.selected_gpu_ids, self.selected_cpu_cores = self._select_optimal_resources()
         
         kernel_name = self._setup_conda_environment()
@@ -84,7 +83,6 @@ class JupyterSession:
         self.kc: BlockingKernelClient = self.km.client()
         self.kc.start_channels()
         self.kc.wait_for_ready()
-        self.log_file_path = self._get_log_file_path()
 
         atexit.register(self._safe_shutdown)
     
@@ -92,63 +90,40 @@ class JupyterSession:
         self._safe_shutdown()
 
     def _get_gpu_memory_usage(self) -> List[Tuple[int, float]]:
-        """Get GPU memory usage for all available GPUs.
-        
-        Returns:
-            List of tuples (gpu_id, memory_usage_percentage)
-        """
         try:
-            # Try using nvidia-ml-py3 first (more reliable)
-            try:
-                import pynvml
-                pynvml.nvmlInit()
-                gpu_count = pynvml.nvmlDeviceGetCount()
-                gpu_usage = []
-                
-                for i in range(gpu_count):
-                    handle = pynvml.nvmlDeviceGetHandleByIndex(i)
-                    mem_info = pynvml.nvmlDeviceGetMemoryInfo(handle)
-                    usage_percent = (mem_info.used / mem_info.total) * 100
-                    gpu_usage.append((i, usage_percent))
-                
-                return gpu_usage
-            except ImportError:
-                # Fallback to nvidia-smi command
-                result = subprocess.run(
-                    ['nvidia-smi', '--query-gpu=index,memory.used,memory.total', '--format=csv,noheader,nounits'],
-                    capture_output=True, text=True, check=True
-                )
-                
-                gpu_usage = []
-                for line in result.stdout.strip().split('\n'):
-                    if line.strip():
-                        parts = line.split(', ')
-                        gpu_id = int(parts[0])
-                        used_mem = float(parts[1])
-                        total_mem = float(parts[2])
-                        usage_percent = (used_mem / total_mem) * 100
-                        gpu_usage.append((gpu_id, usage_percent))
-                
-                return gpu_usage
-                
-        except Exception as e:
-            print(f"Warning: Could not get GPU information: {e}")
-            return []
+            import pynvml
+            pynvml.nvmlInit()
+            gpu_count = pynvml.nvmlDeviceGetCount()
+            gpu_usage = []
+            
+            for i in range(gpu_count):
+                handle = pynvml.nvmlDeviceGetHandleByIndex(i)
+                mem_info = pynvml.nvmlDeviceGetMemoryInfo(handle)
+                usage_percent = (mem_info.used / mem_info.total) * 100
+                gpu_usage.append((i, usage_percent))
+            
+            return gpu_usage
+        except ImportError:
+            result = subprocess.run(
+                ['nvidia-smi', '--query-gpu=index,memory.used,memory.total', '--format=csv,noheader,nounits'],
+                capture_output=True, text=True, check=True
+            )
+            
+            gpu_usage = []
+            for line in result.stdout.strip().split('\n'):
+                if line.strip():
+                    parts = line.split(', ')
+                    gpu_id = int(parts[0])
+                    used_mem = float(parts[1])
+                    total_mem = float(parts[2])
+                    usage_percent = (used_mem / total_mem) * 100
+                    gpu_usage.append((gpu_id, usage_percent))
+            
+            return gpu_usage
 
     def _get_cpu_core_utilization(self) -> List[Tuple[int, float]]:
-        """Get CPU core utilization for all available cores.
-        
-        Returns:
-            List of tuples (core_id, utilization_percentage)
-        """
-        try:
-            # Get per-core CPU utilization over a short interval
-            cpu_percent = psutil.cpu_percent(interval=1, percpu=True)
-            return [(i, usage) for i, usage in enumerate(cpu_percent)]
-        except Exception as e:
-            print(f"Warning: Could not get CPU information: {e}")
-            # Fallback: return all cores with 0% usage
-            return [(i, 0.0) for i in range(psutil.cpu_count())]
+        cpu_percent = psutil.cpu_percent(interval=1, percpu=True)
+        return [(i, usage) for i, usage in enumerate(cpu_percent)]
 
     def _select_optimal_resources(self) -> Tuple[List[int], List[int]]:
         """Select optimal GPU and CPU resources based on current usage.
@@ -156,7 +131,6 @@ class JupyterSession:
         Returns:
             Tuple of (selected_gpu_ids, selected_cpu_cores)
         """
-        # Get current CUDA_VISIBLE_DEVICES if set
         cuda_visible = os.environ.get('CUDA_VISIBLE_DEVICES', '')
         available_gpus = []
         
@@ -166,26 +140,20 @@ class JupyterSession:
             except ValueError:
                 available_gpus = []
         
-        # Get GPU usage and select best ones
         selected_gpu_ids = []
         gpu_usage = self._get_gpu_memory_usage()
         
-        if gpu_usage:  # If we can detect GPUs
+        if gpu_usage: 
             if available_gpus:
-                # Filter to only available GPUs from CUDA_VISIBLE_DEVICES
                 available_gpu_usage = [(gpu_id, usage) for gpu_id, usage in gpu_usage if gpu_id in available_gpus]
             else:
-                # If CUDA_VISIBLE_DEVICES is empty or not set, use all detected GPUs
                 available_gpu_usage = gpu_usage
             
             if available_gpu_usage:
-                # Sort by memory usage (ascending) and select the least used ones
                 available_gpu_usage.sort(key=lambda x: x[1])
                 selected_gpu_ids = [gpu_id for gpu_id, _ in available_gpu_usage[:self.cfg.execution_max_gpu_count]]
         
-        # Get CPU usage and select best cores
         cpu_usage = self._get_cpu_core_utilization()
-        # Sort by utilization (ascending) and select the least used ones
         cpu_usage.sort(key=lambda x: x[1])
         selected_cpu_cores = [core_id for core_id, _ in cpu_usage[:self.cfg.execution_max_cpu_cores]]
         
@@ -195,37 +163,24 @@ class JupyterSession:
         return selected_gpu_ids, selected_cpu_cores
 
     def _setup_conda_environment(self) -> str:
-        # Find the conda environment path for this workspace
-        conda_env_path = self.cfg.conda_envs_dir
-        
-        conda_python = conda_env_path.absolute() / self.env_name / "bin" / "python"
-        assert conda_python.exists(), f"Conda environment python not found at {conda_python}"
+        conda_python = "python"
         
         kname = self.env_name
         ksm = KernelSpecManager()
         
-        # Prepare environment variables for resource limiting
         kernel_env = {}
         
-        # Set CUDA_VISIBLE_DEVICES to selected GPUs
         if self.selected_gpu_ids:
             kernel_env["CUDA_VISIBLE_DEVICES"] = ",".join(map(str, self.selected_gpu_ids))
         else:
-            # If no GPUs selected, hide all GPUs
             kernel_env["CUDA_VISIBLE_DEVICES"] = ""
         
-        # Set CPU affinity using taskset if available (Linux)
         kernel_argv = [str(conda_python), "-m", "ipykernel_launcher", "-f", "{connection_file}"]
         
-        # On Linux, use taskset to limit CPU cores
         if self.selected_cpu_cores and os.name == 'posix':
-            try:
-                # Check if taskset is available
-                subprocess.run(['taskset', '--version'], capture_output=True, check=True)
-                cpu_mask = ",".join(map(str, self.selected_cpu_cores))
-                kernel_argv = ["taskset", "-c", cpu_mask] + kernel_argv
-            except (subprocess.CalledProcessError, FileNotFoundError):
-                print("Warning: taskset not available, CPU core limiting will not be applied")
+            subprocess.run(['taskset', '--version'], capture_output=True, check=True)
+            cpu_mask = ",".join(map(str, self.selected_cpu_cores))
+            kernel_argv = ["taskset", "-c", cpu_mask] + kernel_argv
         
         with tempfile.TemporaryDirectory() as td:
             td = Path(td)
@@ -235,7 +190,6 @@ class JupyterSession:
                 "language": "python",
             }
             
-            # Add environment variables if any
             if kernel_env:
                 kernel_spec["env"] = kernel_env
                 
@@ -251,20 +205,6 @@ class JupyterSession:
         except Exception:
             self.km.shutdown_kernel(now=True)
     
-    def _get_log_file_path(self) -> Path:
-        """Create and return a log file path for monitoring before execution starts."""
-        log_file = tempfile.NamedTemporaryFile(
-            mode='w+', 
-            suffix='.log', 
-            prefix='executor_', 
-            delete=False,
-            encoding='utf-8'
-        )
-        log_file_path = Path(log_file.name)
-        log_file.write("Waiting for execution to start...\n")
-        log_file.close()
-        return log_file_path
-
     def _ask_llm_decision(
         self,
         code: str,
@@ -349,12 +289,7 @@ Your rationale for the action. Describe the current progress, your estimated rem
         
         return should_continue, explanation
 
-    def _write_to_log_file(self, message: str):
-        with open(self.log_file_path, 'w', encoding='utf-8') as log_file:
-            log_file.write(message)
-
     def _collect_iopub_outputs(self, msg_id: str, code: str, goal: str) -> ExecutionResult:
-        self._write_to_log_file("execution started...")
         output, error, success, llm_terminated, timeout = "", "", True, False, False
         start_time = time()
         last_decision_time = start_time
@@ -392,8 +327,6 @@ Your rationale for the action. Describe the current progress, your estimated rem
                 success = False
                 for line in content.get("traceback", []):
                     error += line + "\n"
-
-            self._write_to_log_file(process_backspace_chars(output + "\n" + error))
 
         if timeout | llm_terminated:
             success = False

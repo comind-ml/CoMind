@@ -13,7 +13,6 @@ if __name__ == "__main__":
     parser.add_argument("--competition_id", "-c", type=str, default=None, help="Competition ID")
     parser.add_argument("--data-dir", "-d", type=Path, default=None, help="Path to the competition input directory")
     parser.add_argument("--task-desc", "-t", type=str, default=None, help="Path to the competition task description")
-    parser.add_argument("--monitor-with-agent", action="store_true", help="Run agent with live monitoring panel")
 
     args = parser.parse_args()
 
@@ -41,9 +40,4 @@ if __name__ == "__main__":
 
     agent = Agent(config)
 
-    if args.monitor_with_agent:
-        # Run agent with live monitoring
-        agent.run(start_monitor=True)
-    else:
-        # Run the agent normally without monitoring
-        agent.run()
+    agent.run()

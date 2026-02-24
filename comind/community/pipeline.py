@@ -19,12 +19,10 @@ class Pipeline:
     datasets: list[Dataset]
 
     def __post_init__(self):
-        # Assure all referenced files exist
         for dataset in self.datasets:
             if not dataset.base_path.exists():
                 raise FileNotFoundError(f"Dataset {dataset} not found")
 
-        # Assure the submission exists if the metric is not WorstMetricValue
         if not isinstance(self.metric, WorstMetricValue) and self.submission is None:
             raise FileNotFoundError(f"Submission {self.output_dir} not found")
     

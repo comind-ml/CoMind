@@ -9,9 +9,9 @@ llm:
   timeout: 600
 
 agent:
-  num_code_agents: 1 # Number of code agents
-  num_iterations: 8
-  num_iterations_code_agents: 20
+  num_code_agents: 2 # Number of code agents
+  num_iterations: 20
+  num_iterations_code_agents: 30
   time_limit_code_agents: 18000
 
   max_referred_discussions: 10
@@ -22,6 +22,7 @@ agent:
   base_conda_env_name: comind
   submission_file_name: submission.csv
   separate_validation_submission: True
+  reproduce: False
 
 execution:
   inspect_interval: 1200

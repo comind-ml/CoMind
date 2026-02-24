@@ -117,6 +117,8 @@ Your code will be executed by command line as follows:
 python split_dataset.py --input_dir {self.cfg.competition_input_dir.absolute()} --public_dir ./public --private_dir ./private 
 ```
 
+DO NOT store the training and test files in other folders such as ./public_<TIMESTAMP>, the ./public folder will be exposed to later code agent. Make sure the ./public directory has similar structure with the original data folder.
+
 **2) evaluate.py**
 
 Goal: Evaluate the agent’s predictions on validation set against the hidden ground truth (./private/...). Output evaluation results (json format) to console and write ./private/eval_report.json.

@@ -143,8 +143,9 @@ def download_kernels(cfg: Config, is_lower_better: bool) -> list[Path]:
             results.append(target_dir / metadata['code_file'])
             continue
 
-        while True:
-            wait_time = 1
+        wait_time = 1
+        success = False
+        for _ in range(3):
             try: 
                 api.kernels_pull(kernel_ref, target_dir, metadata=True, quiet=False)
 
@@ -161,6 +162,7 @@ def download_kernels(cfg: Config, is_lower_better: bool) -> list[Path]:
                 
                 api.kernels_output(kernel=kernel_ref, path=target_dir, quiet=False)
                 results.append(target_dir / metadata['code_file'])
+                success = True
                 break
 
             except Exception as e:
@@ -168,6 +170,8 @@ def download_kernels(cfg: Config, is_lower_better: bool) -> list[Path]:
                 print(f"Error downloading kernel {kernel_ref}: {e}, retrying in {wait_time} seconds")
                 time.sleep(wait_time)
         
+        if not success:
+            print(f"Failed to download kernel {kernel_ref} after 3 attempts, skipping")
         time.sleep(1)
 
     return results

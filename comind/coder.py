@@ -1,7 +1,4 @@
 import time
-import pickle
-import html
-import re
 import threading
 import shutil
 from copy import deepcopy
@@ -14,10 +11,6 @@ from comind.agent import MetricUpdater
 from comind.evaluate import Evaluator
 
 class CodeAgent:
-    # ============================================================================
-    # INITIALIZATION AND CONFIGURATION
-    # ============================================================================
-    
     def __init__(
         self, 
         cfg: Config, 
@@ -27,7 +20,6 @@ class CodeAgent:
         evaluator: Evaluator | None,
         env_name: str
     ):
-        # Core configuration
         self.cfg = cfg
         self.draft = draft
         self.is_lower_better = is_lower_better
@@ -36,36 +28,18 @@ class CodeAgent:
         self.metric_updater = metric_updater
         self.jupyter_session = JupyterSession(cfg, env_name)
         
-        # Timing and iteration tracking
         self.start_time = time.time()
         self.iteration = 0
 
-        # Logging setup
         self.logger = get_logger(f"coder-{draft.id}", self.cfg.agent_workspace_dir / "coder.log")
         self.llm_logger = get_logger(f"llm-{draft.id}", self.cfg.agent_workspace_dir / "llm.log", file_only=True)
         self.llm = Conversation(cfg.llm, logger=self.llm_logger)
 
-        self.logger.info(f"Coder {draft.id} using conda environment {env_name}")
-
-        # State tracking
-        self.messages = []
-        self.current_code = draft.code
-        self.output_lines = ["Unavailable. The coder is initializing..."]
         self.best_code = None
         self.best_metric = WorstMetricValue()
         
-        # File paths setup
         (self.cfg.agent_workspace_dir / "best_submission").mkdir(parents=True, exist_ok=True)
         self.best_submission_path = self.cfg.agent_workspace_dir / "best_submission" / self.submission_name
-        self.state_file = self.cfg.agent_workspace_dir.parent / "coder_state.pkl"
-        
-        # Threading support for real-time monitoring
-        self._execution_thread = None
-        self._execution_active = False
-        self._execution_result = None
-        self._execution_lock = threading.Lock()
-        self._output_monitor_thread = None
-        self._current_log_file = None
 
     def _get_packages(self):
         """Get list of pre-installed packages."""
@@ -83,179 +57,6 @@ class CodeAgent:
             "timm",
         ]
         return pkgs
-
-    # ============================================================================
-    # STATE MANAGEMENT
-    # ============================================================================
-    
-    def _save_state(self):
-        """Save current coder state for monitoring."""
-        try:
-            coder_state = {
-                'name': self.draft.title,
-                'messages': self.messages.copy(),
-                'code': self.current_code,
-                'output_lines': self.output_lines.copy(),
-                'iteration': self.iteration,
-                'best_metric': str(self.best_metric),
-                'start_time': self.start_time,
-                'draft_id': self.draft.id,
-                'is_running': True  
-            }
-            
-            # Ensure directory exists
-            self.state_file.parent.mkdir(parents=True, exist_ok=True)
-            
-            with open(self.state_file, 'wb') as f:
-                pickle.dump(coder_state, f)
-                
-        except Exception as e:
-            self.logger.warning(f"Warning: Failed to save coder state: {e}")
-    
-    def _add_message(self, role: str, content: str):
-        """Add message to conversation history and save state."""
-        content = re.sub(r'<code>([\s\S]*?)</code>', r'```python\n\1\n```', content)
-        
-        # Escape HTML tags except within code blocks
-        parts = content.split("```")
-        for i in range(0, len(parts), 2):
-            # Only escape non-code parts (even indices)
-            parts[i] = html.escape(parts[i])
-        content = "```".join(parts)
-        
-        # Actually add the message to the list
-        self.messages.append((role, content))
-        self._save_state()
-    
-    def _update_code(self, code: str):
-        """Update current code and save state."""
-        self.current_code = code
-        self._save_state()
-    
-    def _update_output(self, output_lines: list):
-        """Update output lines and save state."""
-        self.output_lines = output_lines
-        self._save_state()
-
-    # ============================================================================
-    # ASYNC EXECUTION AND MONITORING
-    # ============================================================================
-    
-    def _start_output_monitor(self):
-        """Start monitoring real-time output from Jupyter session log file."""
-        if self._output_monitor_thread and self._output_monitor_thread.is_alive():
-            return
-            
-        def monitor_output():
-            last_modified = 0
-            last_content_hash = ""
-            
-            while self._execution_active:
-                try:
-                    # Monitor the Jupyter session's log file
-                    if self._current_log_file and self._current_log_file.exists():
-                        # Check file modification time
-                        current_modified = self._current_log_file.stat().st_mtime
-                        
-                        # Read and check content for changes
-                        try:
-                            with open(self._current_log_file, 'r', encoding='utf-8', errors='ignore') as f:
-                                full_content = f.read()
-                            
-                            # Use content hash to detect actual changes
-                            import hashlib
-                            content_hash = hashlib.md5(full_content.encode()).hexdigest()
-                            
-                            if content_hash != last_content_hash or current_modified > last_modified:
-                                with self._execution_lock:
-                                    # Update output lines with log file content
-                                    self.output_lines = full_content.split('\n') if full_content else ["Jupyter execution starting..."]
-                                    self._save_state()
-                                    self.logger.info(f"🔄 Jupyter output updated: {len(self.output_lines)} lines")
-                                
-                                last_content_hash = content_hash
-                                last_modified = current_modified
-                        except Exception as read_error:
-                            self.logger.error(f"Error reading Jupyter log file: {read_error}")
-                    else:
-                        # Log file doesn't exist yet, update with placeholder
-                        with self._execution_lock:
-                            self.output_lines = ["Jupyter session starting, waiting for output..."]
-                            self._save_state()
-                    
-                    time.sleep(10)  # Check every 10 seconds for Jupyter
-                except Exception as e:
-                    self.logger.error(f"Error in Jupyter output monitor: {e}")
-                    break
-                    
-        self._output_monitor_thread = threading.Thread(target=monitor_output, daemon=True)
-        self._output_monitor_thread.start()
-    
-    def _stop_output_monitor(self):
-        """Stop the output monitor thread."""
-        self._execution_active = False
-        if self._output_monitor_thread and self._output_monitor_thread.is_alive():
-            self._output_monitor_thread.join(timeout=5)
-    
-    def _execute_async(self, code: str, goal: str):
-        """Execute Jupyter cell asynchronously with real-time monitoring."""
-        def execute_in_background():
-            try:
-                with self._execution_lock:
-                    self._execution_active = True
-                    self._execution_result = None
-                
-                result = self._execute_with_monitoring(code, goal)
-                
-                with self._execution_lock:
-                    self._execution_result = result
-                    if result and result.output:
-                        self.output_lines = result.output.split('\n')
-                    else:
-                        self.output_lines = ["Jupyter execution completed"]
-                    self._save_state()
-                    
-            except Exception as e:
-                with self._execution_lock:
-                    self.output_lines = [f"Jupyter execution error: {str(e)}"]
-                    self._save_state()
-            finally:
-                self._stop_output_monitor()
-                
-        self._execution_thread = threading.Thread(target=execute_in_background, daemon=True)
-        self._execution_thread.start()
-    
-    def _execute_with_monitoring(self, code: str, goal: str):
-        """Execute Jupyter cell with real-time monitoring using log file."""
-        try:
-            # Get the log file path from Jupyter session
-            with self._execution_lock:
-                self._current_log_file = self.jupyter_session.log_file_path
-            
-            # Start monitoring the log file
-            self._start_output_monitor()
-            
-            self.logger.info(f"🔄 Starting Jupyter execution with log file: {self._current_log_file}")
-            
-            # Execute using the Jupyter session
-            result = self.jupyter_session.append_cell(code, goal)
-            
-            return result
-        except Exception as e:
-            self.logger.error(f"Jupyter execution error: {e}")
-            return None
-    
-    def _wait_for_execution(self, timeout=None):
-        """Wait for Jupyter execution to complete and return the result."""
-        if self._execution_thread:
-            self._execution_thread.join(timeout=timeout)
-            
-        with self._execution_lock:
-            return self._execution_result
-
-    # ============================================================================
-    # LLM INTERACTION AND PROMPT GENERATION
-    # ============================================================================
     
     def _post_initial_message(self):
         """Generate and post the initial system message to start the conversation."""
@@ -336,7 +137,6 @@ The value of the **final metric** (not the training loss value) if the code exec
 </metric>
 """
         self.llm.add_message(role="system", content=prompt)
-        self._add_message("agent", prompt)
     
     def _get_feedback_prompt(self, result: ExecutionResult) -> str:
         """Generate feedback prompt based on execution result."""
@@ -356,23 +156,17 @@ The value of the **final metric** (not the training loss value) if the code exec
 
         return prompt
 
-    # ============================================================================
-    # RESULT PROCESSING AND REPORT GENERATION
-    # ============================================================================
-    
     def _truncate_result_output(self, output: str) -> str:
         """Truncate long output for better readability."""
         output_lines = output.splitlines()
         if len(output_lines) <= 80:
             return output 
         
-        # Try to omit long sentences 
         filtered_lines = [line for line in output_lines if len(line.split()) < 100]
 
         if len(filtered_lines) <= 80:
             return "\n".join(filtered_lines)
 
-        # If still too long, truncate the output
         return "\n".join(filtered_lines[:40] + ["... (truncated) ..."] + filtered_lines[-40:])
     
     def _process_metric_report(self, response):
@@ -418,7 +212,6 @@ An extremely detailed description of the weaknesses of the pipeline you found du
 </suggestions>
 """
         self.llm.add_message(role="user", content=prompt)
-        self._add_message("agent", prompt)
         
         if self.evaluator:
             report = self.llm.query(required_fields=["description", "code", "suggestions"], check_fn = lambda x: len(x["suggestions"]) == 1)
@@ -426,31 +219,9 @@ An extremely detailed description of the weaknesses of the pipeline you found du
             report = self.llm.query(required_fields=["metric", "description", "code", "suggestions"], check_fn = lambda x: len(x["suggestions"]) == 1)
             self._process_metric_report(report)
 
-        self._add_message("llm", report['_raw_content'])
         submission = self.cfg.agent_workspace_dir / self.submission_name
         if isinstance(self.best_metric, WorstMetricValue):
             submission = None
-        
-        # Mark coder as completed and save final state
-        try:
-            coder_state = {
-                'name': self.draft.title,
-                'messages': self.messages.copy(),
-                'code': self.current_code,
-                'output_lines': self.output_lines.copy(),
-                'iteration': self.iteration,
-                'best_metric': str(self.best_metric),
-                'start_time': self.start_time,
-                'draft_id': self.draft.id,
-                'is_running': False, 
-                'completed': True
-            }
-            
-            with open(self.state_file, 'wb') as f:
-                pickle.dump(coder_state, f)
-            self.logger.info(f"🏁 Coder {self.draft.id} completed with final best metric: {self.best_metric}")
-        except Exception as e:
-            self.logger.warning(f"Warning: Failed to save final coder state: {e}")
         
         full_code = self.best_code.get_notebook_code() if self.best_code is not None else "Not available"
         self.logger.info(f"Full code: {full_code}")
@@ -469,26 +240,19 @@ An extremely detailed description of the weaknesses of the pipeline you found du
             datasets=self.draft.datasets,
         )
 
-    # ============================================================================
-    # MAIN EXECUTION FLOW
-    # ============================================================================
-
     def run(self) -> Pipeline:
-        """Main execution flow for the code agent."""
         self._post_initial_message()
         
         for iteration in range(self.cfg.agent_num_iterations_code_agents):
             self.logger.info(f"Iteration {iteration}")
             self.iteration = iteration
             
-            # Check time limit
             time_elapsed = time.time() - self.start_time
             if iteration + 1 == self.cfg.agent_num_iterations_code_agents \
                 or time_elapsed > self.cfg.agent_time_limit_code_agents:
                 self.llm.pop_message()
                 break 
 
-            # Get LLM response
             if self.evaluator:
                 def check_fn(response: dict) -> bool:
                     a = "none" in response["validation_submission"][0].lower()
@@ -503,27 +267,16 @@ An extremely detailed description of the weaknesses of the pipeline you found du
                 else:
                     response = self.llm.query(required_fields=["code", "goal"])
 
-            # Extract code and goal, update state
             code, goal = response['code'][0], response['goal'][0]
-            self._add_message("llm", response['_raw_content'])
-            self._update_code(code)
 
             self.logger.info(f"Executing code with monitoring: {code}")
-            # Execute code with monitoring
-            self._execute_async(code, goal)
-            
-            result = self._wait_for_execution()
+            result = self.jupyter_session.append_cell(code, goal)
+
             self.logger.info(f"output: {result.output}")
             self.logger.info(f"error: {result.error}")
             self.logger.info(f"success: {result.success}")
             self.logger.info(f"execution_time: {result.execution_time}")
             
-            # Final output update
-            if result and result.output:
-                output_lines = result.output.split('\n')
-                self._update_output(output_lines)
-
-            # Generate feedback and continue conversation
             feedback_prompt = self._get_feedback_prompt(result)
             
             if self.evaluator:
@@ -581,9 +334,7 @@ The content of your next code cell. Following the previous format, do not wrap y
 """
 
             self.llm.add_message(role="user", content=feedback_prompt)
-            self._add_message("agent", feedback_prompt)
 
-        # Finalize and generate report
         if self.best_submission_path.exists():
             shutil.copy(self.best_submission_path, self.cfg.agent_workspace_dir / self.submission_name)
         
