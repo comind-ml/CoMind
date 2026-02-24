@@ -122,7 +122,7 @@ def download_kernels(cfg: Config, is_lower_better: bool) -> list[Path]:
         if kernel['scriptUrl'] not in seen_urls:
             seen_urls.add(kernel['scriptUrl'])
             unique_kernels.append(kernel)
-    kernels = unique_kernels
+    kernels = unique_kernels[:min(k, len(unique_kernels))]
 
     print(f"Downloading {len(kernels)} kernels")
 

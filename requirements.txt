@@ -17,7 +17,6 @@ psutil==7.0.0
 pyarrow==21.0.0
 pytorch_crf==0.7.2
 PyYAML==6.0.2
-PyYAML==6.0.2
 rdkit_pypi==2022.9.5
 Requests==2.32.5
 rich==14.1.0
@@ -25,7 +24,6 @@ scikit_learn==1.7.1
 scipy==1.16.1
 setuptools==78.1.1
 textual==5.3.0
-timm==1.0.19
 torch==2.8.0
 torch_geometric==2.6.1
 torchvision==0.23.0

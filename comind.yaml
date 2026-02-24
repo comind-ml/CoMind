@@ -1,7 +1,7 @@
 competition:
-  id: null         # Competition ID
-  input_dir: null  # Path to the competition input directory
-  task_desc: null  # Path to the competition task description
+  id: null         
+  input_dir: null  
+  task_desc: null  
 
 llm:
   model: gpt-5-mini
@@ -9,7 +9,7 @@ llm:
   timeout: 600
 
 agent:
-  num_code_agents: 2 # Number of code agents
+  num_code_agents: 2 
   num_iterations: 20
   num_iterations_code_agents: 30
   time_limit_code_agents: 18000
@@ -19,7 +19,6 @@ agent:
 
   workspace_dir: workspace
   external_data_dir: datasets 
-  base_conda_env_name: comind
   submission_file_name: submission.csv
   separate_validation_submission: True
   reproduce: False

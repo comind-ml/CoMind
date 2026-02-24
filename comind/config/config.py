@@ -35,7 +35,6 @@ class Config(DataClassJsonMixin):
     agent_max_referred_kernels: int = 10
     agent_workspace_dir: Path = Path("workspace")
     agent_external_data_dir: Optional[Path] = None
-    agent_base_conda_env_name: str = "comind"
     agent_submission_file_name: str = "submission.csv"
     agent_separate_validation_submission: bool = True
     agent_reproduce: bool = True
